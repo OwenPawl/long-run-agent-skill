@@ -1,0 +1,4 @@
+interface:
+  display_name: "Long Run Agent"
+  short_description: "Run long tasks through a steerable worker and optional mission harness"
+  default_prompt: "Use $long-run-agent to run this long task through a steerable .agent/live.md control plane, and use the mission harness when durable run state is needed."
