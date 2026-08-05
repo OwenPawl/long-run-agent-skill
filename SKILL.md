@@ -41,6 +41,14 @@ python3 <skill-path>/scripts/watch_live_file.py <project-root>/.agent/live.md --
 python3 <skill-path>/scripts/reveal_live_file.py <project-root>/.agent/live.md --skip-if-open
 ```
 
+When a local MCP client is available, `long-run-agent-mcp` exposes the same
+authoritative harness through namespaced `mission_*` tools. Prefer
+`mission_control_read` at startup and before major steps; pass its previous
+SHA-256 so unchanged `live.md` content is not repacked into context. A composed
+MCP server may register these tools with
+`long_run_agent_skill.mcp_tools.register_mission_tools`, but `.agent/` remains
+the only mission truth store.
+
 The harness creates a `.agent/` directory with a human-readable control plane
 (`live.md`), durable Markdown state (`current_state.md`, `constitution.md`,
 `known_failures.md`, `decisions.md`), and portable structured records

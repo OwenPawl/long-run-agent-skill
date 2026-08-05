@@ -139,3 +139,9 @@ class PublicReadinessTests(unittest.TestCase):
                 oversized.append(f"{path.relative_to(REPO_ROOT)}:{line_count}")
 
         self.assertEqual(oversized, [])
+
+    def test_mcp_is_documented_without_replacing_authoritative_state(self) -> None:
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("long-run-agent-mcp", readme)
+        self.assertIn("mission_control_read", readme)
+        self.assertIn("Durable truth still", readme)

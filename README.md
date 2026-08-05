@@ -1,8 +1,9 @@
 # Long Run Agent Skill
 
-This repository contains a small Codex skill for long-running work. The mission
-harness provides a steerable `.agent/live.md` control plane, watcher scripts,
-and a minimal, domain-neutral audit layer for preserving run state over time.
+This repository contains a small skill and local stdio MCP server for
+long-running work. The mission harness provides a steerable `.agent/live.md`
+control plane, watcher scripts, and a minimal, domain-neutral audit layer for
+preserving run state over time.
 
 The harness is not an agent OS, planner, or database. It exists to make long
 runs less wrong by keeping durable records of goals, commands, verification,
@@ -29,6 +30,36 @@ python3 scripts/install_skill.py --execute --host both
 The installer copies this skill directory, excludes cache/build artifacts, and
 backs up an existing target before replacing it. It does not install system
 packages or start a worker.
+
+Install the MCP server into a Python environment with:
+
+```bash
+pip install -e .
+long-run-agent-mcp
+```
+
+Example local MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "long-run-agent": {
+      "command": "/absolute/path/to/venv/bin/long-run-agent-mcp"
+    }
+  }
+}
+```
+
+The server exposes namespaced `mission_*` tools for initialization, control
+reads, run start/close, validation, claims, artifacts, friction, summaries, and
+index search. `mission_control_read` accepts the SHA-256 from the previous read
+and omits unchanged content, giving MCP clients a bounded polling equivalent of
+the terminal watcher. The existing watcher and reveal scripts remain available
+for direct skill operation.
+
+Other local MCP servers can compose the same mission tools by importing
+`long_run_agent_skill.mcp_tools.register_mission_tools`. Durable truth still
+lives only in `.agent/`; composition does not create a second state store.
 
 ## Mission Harness v0.1
 
@@ -132,7 +163,8 @@ Run:
 ```bash
 python3 scripts/install_skill.py --json
 python3 -m unittest discover -s tests
-python3 -m compileall scripts tests
+python3 -m compileall long_run_agent_skill scripts tests
+python3 -m long_run_agent_skill
 python3 scripts/mission_harness.py --root /tmp/example-agent init
 python3 scripts/mission_harness.py --root /tmp/example-agent state preflight
 python3 scripts/mission_harness.py --root /tmp/example-agent friction report --fail-on-ambiguous-open

@@ -2,5 +2,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.lock
+*.egg-info/
+.eggs/
+build/
+dist/
 .agent/
 development/
