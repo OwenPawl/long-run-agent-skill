@@ -96,6 +96,7 @@ class HarnessRunner:
         try:
             result = subprocess.run(
                 command,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 capture_output=True,
                 timeout=timeout,
@@ -140,6 +141,7 @@ class HarnessRunner:
         ]
         result = subprocess.run(
             command,
+            stdin=subprocess.DEVNULL,
             text=True,
             capture_output=True,
             shell=False,

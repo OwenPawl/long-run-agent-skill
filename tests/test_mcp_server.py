@@ -3,8 +3,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from long_run_agent_skill.mcp_runtime import (
     HarnessRunner,
@@ -24,6 +26,14 @@ def settings() -> HarnessSettings:
 
 
 class MCPRuntimeTests(unittest.TestCase):
+    def test_harness_runner_never_inherits_mcp_protocol_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "long_run_agent_skill.mcp_runtime.subprocess.run"
+        ) as run:
+            run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
+            HarnessRunner(settings()).run(tmp, ["validate"])
+            self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
     def test_runner_initializes_and_validates_real_harness_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runner = HarnessRunner(settings())
