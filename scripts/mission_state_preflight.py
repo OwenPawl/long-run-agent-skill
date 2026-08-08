@@ -9,7 +9,10 @@ import time
 from typing import Any, Iterable
 
 
-READ_TIMEOUT_SECONDS = 3
+# File Provider hydration can take longer than a normal local read even after
+# brctl accepts the download request. Keep the probe bounded, but allow enough
+# time for a cold dataless file to materialize.
+READ_TIMEOUT_SECONDS = 15
 READ_VERIFY_ATTEMPTS = 2
 READ_VERIFY_RETRY_DELAY_SECONDS = 0.2
 
