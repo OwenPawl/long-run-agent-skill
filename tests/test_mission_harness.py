@@ -389,6 +389,49 @@ class MissionHarnessTests(unittest.TestCase):
             self.assertIn("## Commands Run\n- None recorded yet.", live)
             self.assertIn("## Claims Touched\n- None recorded yet.", live)
 
+    def test_run_start_preserves_live_control_steering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.run_cli(root, "init")
+            live_path = root / ".agent" / "live.md"
+            live = live_path.read_text(encoding="utf-8")
+            live = live.replace(
+                "## User Updates\n- None recorded yet.",
+                "## User Updates\n- operator update",
+            )
+            live = live.replace(
+                "## Constraints\n- None recorded yet.",
+                "## Constraints\n- existing live constraint",
+            )
+            live = live.replace(
+                "## Interrupts / Corrections\n- None recorded yet.",
+                "## Interrupts / Corrections\n- do not lose this correction",
+            )
+            live_path.write_text(live, encoding="utf-8")
+
+            self.run_cli(
+                root,
+                "run",
+                "start",
+                "--goal",
+                "controlled run",
+                "--constraint",
+                "command-line constraint",
+            )
+
+            updated = live_path.read_text(encoding="utf-8")
+            self.assertIn("- operator update", updated)
+            self.assertIn("- existing live constraint", updated)
+            self.assertIn("- command-line constraint", updated)
+            self.assertIn("- do not lose this correction", updated)
+            start_record = json.loads(
+                (root / ".agent" / "runs.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+            )
+            self.assertEqual(
+                start_record["constraints"],
+                ["existing live constraint", "command-line constraint"],
+            )
+
     def test_run_close_and_friction_accept_observed_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

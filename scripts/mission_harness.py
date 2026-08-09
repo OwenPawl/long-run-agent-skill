@@ -418,22 +418,28 @@ def cmd_run_start(args: argparse.Namespace) -> int:
     require_initialized(root)
     run_id = args.run_id or short_id("run")
     timestamp = utc_now()
+    live_path = path_for(root, "live.md")
+    live_text = read_text(live_path)
+    existing_constraints = section_entries(live_text, "Constraints")
+    existing_interrupts = section_entries(live_text, "Interrupts / Corrections")
+    effective_constraints = unique(existing_constraints + (args.constraint or []))
     record = {
         "schema_version": "agent_run.v1",
         "event": "run_start",
         "run_id": run_id,
         "timestamp": timestamp,
         "goal": args.goal,
-        "constraints": args.constraint or [],
+        "constraints": effective_constraints,
         "status": "running",
     }
     append_jsonl(path_for(root, "runs.jsonl"), record)
     replace_live_sections(
-        path_for(root, "live.md"),
+        live_path,
         {
             **clear_per_run_live_sections(),
             "Current Goal": [f"- {args.goal}"],
-            "Constraints": md_items(args.constraint or []),
+            "Constraints": md_items(effective_constraints),
+            "Interrupts / Corrections": md_items(existing_interrupts),
             "Agent Status": [
                 f"- Run ID: {run_id}",
                 "- Status: running",
