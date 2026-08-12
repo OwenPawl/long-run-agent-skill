@@ -11,6 +11,8 @@ Use one worker subagent as the only place where substantial task state accumulat
 
 Create exactly one subagent total: the main thread creates the worker, and the worker must not create any additional subagents.
 
+Keep the parent turn alive when the host provides a subagent wait or mailbox mechanism. A durable control plane preserves state, but it does not by itself create a new user-visible chat message after the parent turn ends.
+
 File edits cannot literally interrupt the model. Treat `.agent/live.md` as a mailbox: the worker runs the watcher script and checks it at startup, after each meaningful batch of work, before risky changes, and whenever it is waiting for user input.
 
 ## Mission Harness
@@ -115,7 +117,10 @@ Operational rules:
    - the instruction that all orchestration, exploration, implementation, and verification belong inside the worker context without creating more subagents.
 6. Do not duplicate the worker's work in the main thread. Do not stream detailed progress back into the main thread. If the user sends steering in chat, append or forward only that steering to `live.md` or the worker.
 7. Tell the user where `live.md` is and that they can edit it to steer, answer questions, stop, or request status.
-8. Do not treat apparent task completion as the end of the run. The worker should go dormant and wait for the next `live.md` update unless it explicitly directs the worker to stop.
+8. If the host provides a subagent wait or mailbox mechanism, keep the parent turn active with that mechanism. Prefer long event-driven waits over busy polling. Do not send a final response merely because the worker has started.
+9. When the worker reports completion, a blocker, or a question requiring user input, immediately send the user a self-contained status message. The user must not need to ask for progress to surface an already-recorded terminal state.
+10. If the host cannot keep the parent turn active or wake it after return, state before returning that automatic chat notification is unavailable and that `live.md` is the status source. Do not promise a later chat message.
+11. Do not treat apparent task completion as the end of the durable worker session. The worker should go dormant and wait for the next `live.md` update unless the user explicitly directs it to stop.
 
 Worker prompt template:
 
@@ -129,6 +134,7 @@ Run directory: <run-dir>
 Live control: <run-dir>/.agent/live.md
 
 You are the only worker for this long run. Keep the main thread thin: do all substantive orchestration, research, implementation, verification, and state tracking in your own context and artifacts. Do not spawn, delegate to, or request any additional subagents. Create and maintain `.agent/live.md`. Run the watcher script from the skill and check it regularly. If you need user input, write the question into `live.md` and wait for the user's reply there. Treat STOP or PAUSE directives in `live.md` as higher priority than the original task.
+Before becoming dormant or waiting for user input, send the parent agent a concise completion, blocked, or question message using the host's subagent mailbox when available. Recording state in `live.md` remains mandatory and is not replaced by the message.
 ```
 
 ## Worker Workflow
@@ -150,10 +156,10 @@ python3 <skill-path>/scripts/reveal_live_file.py <run-dir>/.agent/live.md --skip
 4. Keep the watcher session running. Poll its output after each batch of work and before decisions that would be hard to unwind.
 5. Do not create child subagents. Complete the long run in this worker context, using local tools and durable run-directory artifacts instead of delegation.
 6. Maintain `.agent/live.md` with the stable sections created by `init`.
-7. If blocked on a user decision, update `Agent Questions`, set `Run Status` to waiting, and wait for a file change before continuing.
+7. If blocked on a user decision, update `Agent Questions`, set `Run Status` to waiting, notify the parent through the host mailbox when available, and wait for a file change before continuing.
 8. If `live.md` says `STOP`, stop after making the workspace consistent and write a brief status. If it says `PAUSE`, stop taking new actions and wait for `RESUME`.
 9. Save durable artifacts in the run directory: notes, logs, generated files, validation outputs, and final summaries that would otherwise bloat the main chat.
-10. When the current task appears complete, do not exit. Update `Agent Status` to `dormant`, write the completion summary and artifact paths into `live.md` or durable run records, then wait for the next file update.
+10. When the current task appears complete, do not exit. Update `Agent Status` to `dormant`, write the completion summary and artifact paths into `live.md` or durable run records, notify the parent through the host mailbox when available, then wait for the next file update.
 11. End the worker only when the user gives an explicit termination directive such as `STOP` or `FINALIZE AND STOP`. A plain `FINALIZE` means write a concise final summary and then return to dormant waiting.
 12. Keep final responses concise. Point to the run directory and the important artifact paths instead of pasting long logs.
 

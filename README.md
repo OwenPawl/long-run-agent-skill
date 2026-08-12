@@ -134,6 +134,11 @@ Use `scripts/watch_live_file.py` to print `.agent/live.md` at startup and after
 changes. Use `scripts/reveal_live_file.py` once at startup to reveal `live.md`
 in Finder, File Explorer, or the host file manager. These scripts keep the
 automatic opening/watching workflow without adding a second steering document.
+They do not inject a new message into a chat whose parent agent turn has already
+ended. On hosts with subagent waiting or mailbox support, keep the parent turn
+active and forward completion, blocked, and user-input states immediately. On
+other hosts, treat `live.md` as the status source and disclose that automatic
+chat notification is unavailable.
 
 `run start` clears per-run sections in `live.md` so the next close does not
 inherit stale commands, claims, artifacts, failures, or next actions. JSON state
@@ -182,6 +187,7 @@ python3 scripts/mission_artifact_materialize.py --root /tmp/example-agent --path
 
 ## Current Limits
 
+- The harness cannot wake a finished parent-agent turn or inject a new chat message by itself. User-facing completion and blocked notifications require host wait/mailbox support or an external notification bridge.
 - SQLite is a derived search index only. Markdown and JSON/JSONL remain the authoritative state.
 - `validate` performs built-in sanity checks; it does not require the external `jsonschema` package.
 - The harness is domain-neutral. Tool-specific or project-specific evidence belongs in the project using the harness.
