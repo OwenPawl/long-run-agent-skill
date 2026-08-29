@@ -145,3 +145,13 @@ class PublicReadinessTests(unittest.TestCase):
         self.assertIn("long-run-agent-mcp", readme)
         self.assertIn("mission_control_read", readme)
         self.assertIn("Durable truth still", readme)
+
+    def test_terminal_state_handoff_is_documented(self) -> None:
+        skill = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        normalized_skill = " ".join(skill.lower().split())
+        normalized_readme = " ".join(readme.lower().split())
+        self.assertIn("keep the parent turn active", normalized_skill)
+        self.assertIn("completion, blocked, or question message", normalized_skill)
+        self.assertIn("cannot wake a finished parent-agent turn", normalized_readme)
+        self.assertIn("automatic chat notification is unavailable", normalized_readme)
