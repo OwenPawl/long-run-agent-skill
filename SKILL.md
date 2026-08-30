@@ -81,8 +81,10 @@ Operational rules:
    readiness report is needed.
 8. If an open run makes `live.md` too large to serve as a control plane, first
    record durable claims/artifacts/friction, then run `state compact-live`.
-   It archives the verbose snapshot before replacing evidence-list sections
-   with an archive pointer.
+   It validates those durable references and archives the verbose snapshot
+   before replacing evidence-list sections with a typed archive pointer. Run
+   close recovers genuine verification and claim/artifact references through
+   archive chains.
 9. If an evidence path may be File Provider-backed or a verification read
    stalls, run `mission_artifact_materialize.py --id <artifact-id>` for a
    recorded artifact, or `--path <new-evidence-path>` before registration.

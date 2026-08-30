@@ -17,6 +17,14 @@ import uuid
 from typing import Any, Iterable
 
 from mission_harness_lock import atomic_write_text, file_lock
+from mission_live_state import (
+    COMPACTED_SECTIONS,
+    LiveStateError,
+    compact_live_snapshot,
+    replace_live_sections,
+    section_entries,
+    section_entries_with_archives,
+)
 from mission_friction import (
     FrictionError,
     ambiguous_open_records,
@@ -92,19 +100,6 @@ AGENT_STATE_FILES = [
     "artifacts.json",
     "friction.jsonl",
 ]
-
-PLACEHOLDERS = {
-    "none",
-    "none.",
-    "none yet",
-    "none yet.",
-    "none recorded yet",
-    "none recorded yet.",
-    "add updates here.",
-    "add constraints here.",
-    "add corrections here.",
-}
-
 
 class HarnessError(RuntimeError):
     """Raised for user-facing harness failures."""
@@ -303,36 +298,6 @@ def require_initialized(root: pathlib.Path) -> None:
         raise HarnessError(f"missing .agent files: {', '.join(missing)}; run init first")
 
 
-def strip_md_marker(line: str) -> str:
-    stripped = line.strip()
-    if stripped.startswith("- "):
-        return stripped[2:].strip()
-    if stripped[:3].replace(".", "").isdigit() and len(stripped) > 3:
-        return stripped[3:].strip()
-    return stripped
-
-
-def section_entries(live_text: str, section: str) -> list[str]:
-    lines = live_text.splitlines()
-    in_section = False
-    entries: list[str] = []
-    for line in lines:
-        if line.startswith("## "):
-            title = line[3:].strip()
-            if in_section and title != section:
-                break
-            in_section = title == section
-            continue
-        if not in_section:
-            continue
-        item = strip_md_marker(line)
-        normalized = item.strip("_").strip().lower()
-        if not item or normalized in PLACEHOLDERS:
-            continue
-        entries.append(item)
-    return entries
-
-
 def uniqueness_key(value: str) -> str:
     """Normalize presentation-only Markdown differences for closeout lists."""
     item = value.strip()
@@ -358,42 +323,6 @@ def md_items(items: list[str]) -> list[str]:
     if not items:
         return ["- None recorded yet."]
     return [f"- {item}" for item in items]
-
-
-def replace_live_sections(path: pathlib.Path, replacements: dict[str, list[str]]) -> None:
-    text = read_text(path) or live_template()
-    lines = text.splitlines()
-    output: list[str] = []
-    i = 0
-    seen: set[str] = set()
-    while i < len(lines):
-        line = lines[i]
-        if not line.startswith("## "):
-            output.append(line)
-            i += 1
-            continue
-        title = line[3:].strip()
-        output.append(line)
-        i += 1
-        if title in replacements:
-            seen.add(title)
-            output.extend(replacements[title])
-            while i < len(lines) and not lines[i].startswith("## "):
-                i += 1
-            if i < len(lines):
-                output.append("")
-            continue
-        while i < len(lines) and not lines[i].startswith("## "):
-            output.append(lines[i])
-            i += 1
-
-    for title, body in replacements.items():
-        if title not in seen:
-            if output and output[-1].strip():
-                output.append("")
-            output.append(f"## {title}")
-            output.extend(body)
-    write_text(path, "\n".join(output))
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -484,11 +413,20 @@ def cmd_run_close(args: argparse.Namespace) -> int:
         raise HarnessError("no open run found; pass --run-id or start a run first")
 
     live_text = read_text(path_for(root, "live.md"))
-    commands = unique((args.command or []) + section_entries(live_text, "Commands Run"))
-    tests = unique((args.test or []) + section_entries(live_text, "Tests / Verification"))
+    directory = agent_dir(root)
+    commands = unique(
+        (args.command or []) + section_entries_with_archives(directory, live_text, "Commands Run")
+    )
+    tests = unique(
+        (args.test or []) + section_entries_with_archives(directory, live_text, "Tests / Verification")
+    )
     failures = unique((args.failure or []) + section_entries(live_text, "Failures / Blockers"))
-    claims = unique((args.claim or []) + section_entries(live_text, "Claims Touched"))
-    artifacts = unique((args.artifact or []) + section_entries(live_text, "Artifacts Produced"))
+    claims = unique(
+        (args.claim or []) + section_entries_with_archives(directory, live_text, "Claims Touched")
+    )
+    artifacts = unique(
+        (args.artifact or []) + section_entries_with_archives(directory, live_text, "Artifacts Produced")
+    )
     # Closing next actions are forward-looking. If the caller provides an
     # explicit list, prefer it over stale live.md planning notes from the run.
     next_actions = unique(args.next_action or section_entries(live_text, "Next Actions"))
@@ -699,17 +637,58 @@ def prepare_command_state(root: pathlib.Path) -> None:
         raise HarnessError("state readiness failed: " + "; ".join(result["errors"]))
 
 
+def _registered_reference_keys(records: list[dict[str, Any]], fields: tuple[str, ...]) -> set[str]:
+    return {
+        uniqueness_key(str(record.get(field, "")))
+        for record in records
+        for field in fields
+        if record.get(field)
+    }
+
+
+def require_compaction_references_registered(root: pathlib.Path, live_text: str) -> None:
+    directory = agent_dir(root)
+    registries = (
+        (
+            "Claims Touched",
+            load_json(path_for(root, "claims.json")).get("claims", []),
+            ("id", "claim"),
+        ),
+        (
+            "Artifacts Produced",
+            load_json(path_for(root, "artifacts.json")).get("artifacts", []),
+            ("id", "path"),
+        ),
+        (
+            "Friction Observed",
+            read_jsonl(path_for(root, "friction.jsonl")),
+            ("id", "description"),
+        ),
+    )
+    unresolved: list[str] = []
+    for section, records, fields in registries:
+        registered = _registered_reference_keys(records, fields)
+        references = section_entries_with_archives(directory, live_text, section)
+        missing = [item for item in references if uniqueness_key(item) not in registered]
+        if missing:
+            unresolved.append(f"{section}: {', '.join(missing)}")
+    if unresolved:
+        raise HarnessError(
+            "compact-live requires durable claim/artifact/friction records before archiving: "
+            + "; ".join(unresolved)
+        )
+
+
 def cmd_state_compact_live(args: argparse.Namespace) -> int:
     root = pathlib.Path(args.root)
     require_initialized(root)
+    live_path = path_for(root, "live.md")
+    live_text = read_text(live_path)
+    require_compaction_references_registered(root, live_text)
     stamp = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    archive = agent_dir(root) / "archive" / f"live-{stamp}.md"
-    atomic_write_text(archive, read_text(path_for(root, "live.md")))
-    note = [f"- Compacted history archived at `.agent/{archive.relative_to(agent_dir(root))}`."]
-    sections = ("Commands Run", "Tests / Verification", "Claims Touched", "Artifacts Produced", "Friction Observed")
-    replace_live_sections(path_for(root, "live.md"), {section: note for section in sections})
+    archive = compact_live_snapshot(agent_dir(root), live_path, live_text, stamp)
     summarize_state(root)
-    print(json.dumps({"archive": str(archive), "sections_compacted": list(sections)}, sort_keys=True))
+    print(json.dumps({"archive": str(archive), "sections_compacted": list(COMPACTED_SECTIONS)}, sort_keys=True))
     return 0
 
 
@@ -985,7 +964,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command != "init" and not (args.command == "state" and args.state_command == "preflight"):
             prepare_command_state(pathlib.Path(args.root))
         return args.func(args)
-    except (HarnessError, FrictionError) as exc:
+    except (HarnessError, FrictionError, LiveStateError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
