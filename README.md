@@ -119,7 +119,7 @@ structured files during run close or explicit `claim`, `artifact`, and
 - `mission_artifact_materialize.py --id <artifact-id>` or `--path <new-evidence-path>`: resolve recorded or pre-registration evidence, request its macOS File Provider download if it is `dataless`, and perform a bounded basic-readability check before verification or registration. Add `--stage-copy <new-file>` for a long-running consumer that needs an atomic verified local copy; it supports regular files and will not overwrite an existing destination.
 - `validate`: parse and sanity-check the basic Markdown, JSON, and JSONL state.
 - `state preflight`: on macOS, explicitly request downloads for File Provider `dataless` `.agent` files and perform bounded readability checks for durable state files; on other platforms this is a no-op.
-- `state compact-live`: archive the current live control plane under `.agent/archive/`, then replace verbose command/test/claim/artifact/friction sections with an archive pointer while retaining active goal and control sections.
+- `state compact-live`: verify referenced claims/artifacts/friction are durably registered, archive the current live control plane under `.agent/archive/`, then replace verbose evidence sections with a typed archive pointer while retaining active goal and control sections. Run close follows archive chains to recover genuine commands/tests and claim/artifact references.
 - `state summarize`: regenerate `.agent/current_state.md` from recorded state, preferring active `live.md` goal/failures/next actions while a run is open.
 - `index rebuild`: rebuild the derived `.agent/mission_index.sqlite` database from Markdown, JSON, and JSONL state using a fresh replacement database.
 - `index search "query terms"`: search the derived SQLite index. Add `--kind claim`, `--kind friction`, or another record kind to narrow results. If the derived database is unreadable, search rebuilds it once from authoritative state.
@@ -149,7 +149,9 @@ On macOS, commands that read or mutate initialized state automatically perform
 the File Provider readiness check first. Use `state preflight` directly when
 you need its diagnostic report. If an unusually long open run makes `live.md`
 hard to review, record durable claims/artifacts/friction first, then use
-`state compact-live`; its archived snapshot preserves removed operational text.
+`state compact-live`; it refuses to archive unresolved durable references, and
+its archived snapshot preserves removed operational text. Compact writes use a
+compare-and-swap check so a detected concurrent `live.md` edit is not replaced.
 
 Friction tracking is evidence-preserving, not issue-count inflation. Keep
 `.agent/friction.jsonl` append-only, but treat the latest record for each
@@ -195,7 +197,7 @@ python3 scripts/mission_artifact_materialize.py --root /tmp/example-agent --path
 - File Provider hydration is attempted automatically for initialized state operations on macOS; readiness reads time out rather than leaving the command stalled if content is not available promptly.
 - `mission_artifact_materialize.py` verifies the selected file or directory entry itself; for a recorded directory artifact, select a nested evidence file explicitly before verifying that file's contents.
 - `--stage-copy` stabilizes a selected regular-file input for a long-running consumer; it does not synchronize verifier output back to durable storage or interpret what the copied file proves.
-- `state compact-live` archives operational text but does not independently promote its claims or artifacts; record durable facts before compaction.
+- `state compact-live` archives operational text but does not independently promote claims, artifacts, or friction. It fails before archiving when live references cannot be matched to durable records.
 
 ## License
 
