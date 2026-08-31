@@ -71,6 +71,7 @@ class MissionHarnessTests(unittest.TestCase):
                 "claims.json",
                 "artifacts.json",
                 "friction.jsonl",
+                "evidence_relations.jsonl",
             ]:
                 self.assertTrue((agent / name).exists(), name)
             live = (agent / "live.md").read_text(encoding="utf-8")
@@ -87,7 +88,7 @@ class MissionHarnessTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertIn(payload["status"], {"not_applicable", "ready", "readable_with_dataless_flags_remaining"})
             if sys.platform == "darwin":
-                self.assertEqual(len(payload["read_verified"]), 9)
+                self.assertEqual(len(payload["read_verified"]), 10)
 
     def test_state_read_verification_timeout_is_bounded(self) -> None:
         with (

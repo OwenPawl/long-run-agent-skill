@@ -19,6 +19,7 @@
     "failures": { "type": "array", "items": { "type": "string" } },
     "claims_touched": { "type": "array", "items": { "type": "string" } },
     "artifacts_produced": { "type": "array", "items": { "type": "string" } },
+    "evidence_relations": { "type": "array", "items": { "type": "string" } },
     "next_actions": { "type": "array", "items": { "type": "string" } },
     "no_verification_reason": { "type": "string" },
     "status": { "type": "string" }

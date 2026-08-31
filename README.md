@@ -7,7 +7,8 @@ preserving run state over time.
 
 The harness is not an agent OS, planner, or database. It exists to make long
 runs less wrong by keeping durable records of goals, commands, verification,
-claims, artifacts, failures, friction, and next actions.
+append-only claim revisions, typed evidence relationships, artifacts, failures,
+friction, and next actions.
 
 ## Install
 
@@ -51,8 +52,9 @@ Example local MCP client configuration:
 ```
 
 The server exposes namespaced `mission_*` tools for initialization, control
-reads, run start/close, validation, claims, artifacts, friction, summaries, and
-index search. `mission_control_read` accepts the SHA-256 from the previous read
+reads, run start/close, validation, claim revisions, typed relationships,
+artifacts, friction, summaries, and index search. `mission_control_read` accepts
+the SHA-256 from the previous read
 and omits unchanged content, giving MCP clients a bounded polling equivalent of
 the terminal watcher. The existing watcher and reveal scripts remain available
 for direct skill operation.
@@ -61,13 +63,18 @@ Other local MCP servers can compose the same mission tools by importing
 `long_run_agent_skill.mcp_tools.register_mission_tools`. Durable truth still
 lives only in `.agent/`; composition does not create a second state store.
 
-## Mission Harness v0.1
+## Mission Harness v0.2
 
 Use the harness from any project root:
 
 ```bash
 python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project init
 python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project run start --goal "bounded task"
+python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project claim add --id <claim-id> --claim "..." --source-path <path> --source-kind <kind> --status tested
+python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project claim disprove --id <claim-id> --evidence-artifact <artifact-id> --notes "..."
+python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project claim history --id <claim-id>
+python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project relation add --source-type artifact --source-id <artifact-id> --relation supports --target-type claim_revision --target-id <revision-id>
+python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project relation list --endpoint-type claim --endpoint-id <claim-id>
 python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project friction add --category verification_gap --description "..." --impact "..." --proposed-harness-need "..."
 python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project friction settle --id <friction-id> --status consolidated --root-cause-id <root-id> --release-disposition deferred --rationale "..."
 python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project friction report --fail-on-ambiguous-open --output friction-readiness.md
@@ -80,6 +87,7 @@ python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/proje
 python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project index search "query terms"
 python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project index status
 python3 /path/to/long-run-agent/scripts/mission_records_recent.py --root /path/to/project claims --limit 5
+python3 /path/to/long-run-agent/scripts/mission_records_recent.py --root /path/to/project relations --limit 5
 python3 /path/to/long-run-agent/scripts/mission_artifact_materialize.py --root /path/to/project --id <artifact-id>
 python3 /path/to/long-run-agent/scripts/mission_artifact_materialize.py --root /path/to/project --path <new-evidence-path>
 python3 /path/to/long-run-agent/scripts/mission_artifact_materialize.py --root /path/to/project --path <input-path> --stage-copy /private/tmp/<stable-input>
@@ -100,6 +108,7 @@ python3 /path/to/long-run-agent/scripts/reveal_live_file.py /path/to/project/.ag
   claims.json
   artifacts.json
   friction.jsonl
+  evidence_relations.jsonl
 ```
 
 `live.md` is the active control plane. Durable facts should be promoted into the
@@ -110,11 +119,15 @@ structured files during run close or explicit `claim`, `artifact`, and
 
 - `init`: create the `.agent/` files without overwriting existing files unless `--force` is passed.
 - `run start`: append a `run_start` record to `.agent/runs.jsonl` and update `live.md`.
-- `run close`: append a `run_close` record with outcome, commands, tests, changed files, failures, claims, artifacts, and next actions.
+- `run close`: append a `run_close` record with outcome, commands, tests, changed files, failures, claims, artifacts, evidence relationships, and next actions. Use `--relation <id>` to bind newly recorded edges to the closeout.
 - `friction add`: append a process/tooling friction record to `.agent/friction.jsonl`. If it is another observation of a known pattern, include `--root-cause-id` instead of creating a disconnected open issue.
 - `friction settle`: append release-readiness settlement records for existing friction ids. This preserves the original evidence and makes the latest effective status clear.
 - `friction report`: summarize raw records versus effective friction items, root causes, release dispositions, ambiguous open items, and release-blocking items.
-- `claim add`: create or replace a claim record in `.agent/claims.json`.
+- `claim add`: append an immutable revision in `.agent/claims.json`. Reusing a claim id advances its revision number and records the superseded revision; it never replaces prior history.
+- `claim disprove`: append a `disproved` revision and associate one or more uniquely identified artifacts through `refutes` relationships targeting the previously current revision. Direct `claim add --status disproved` is rejected so a disproval cannot omit evidence.
+- `claim history`: return all revisions for one stable claim id together with its typed evidence relationships.
+- `relation add`: append a typed edge to `.agent/evidence_relations.jsonl`. Endpoints can reference claims, claim revisions, artifacts, runs, friction, or earlier relationships; both endpoints must exist.
+- `relation list`: list typed evidence edges, optionally filtered by endpoint and relationship type.
 - `artifact add`: append an artifact record to `.agent/artifacts.json`.
 - `mission_artifact_materialize.py --id <artifact-id>` or `--path <new-evidence-path>`: resolve recorded or pre-registration evidence, request its macOS File Provider download if it is `dataless`, and perform a bounded basic-readability check before verification or registration. Add `--stage-copy <new-file>` for a long-running consumer that needs an atomic verified local copy; it supports regular files and will not overwrite an existing destination.
 - `validate`: parse and sanity-check the basic Markdown, JSON, and JSONL state.
@@ -124,7 +137,7 @@ structured files during run close or explicit `claim`, `artifact`, and
 - `index rebuild`: rebuild the derived `.agent/mission_index.sqlite` database from Markdown, JSON, and JSONL state using a fresh replacement database.
 - `index search "query terms"`: search the derived SQLite index. Add `--kind claim`, `--kind friction`, or another record kind to narrow results. If the derived database is unreadable, search rebuilds it once from authoritative state.
 - `index status`: report whether the derived SQLite index exists, how many records it contains, and whether SQLite FTS is available. If status reports `ok: false`, run `index rebuild`.
-- `mission_records_recent.py claims|artifacts|friction|runs --limit N`: list recent authoritative records as JSON without manually guessing each state file's schema.
+- `mission_records_recent.py claims|artifacts|friction|relations|runs --limit N`: list recent authoritative records as JSON without manually guessing each state file's schema.
 
 The harness commands above are implemented in `scripts/mission_harness.py`;
 artifact materialization and SQLite indexing are small companion modules so the
@@ -143,7 +156,12 @@ chat notification is unavailable.
 `run start` clears per-run sections in `live.md` so the next close does not
 inherit stale commands, claims, artifacts, failures, or next actions. JSON state
 mutations use a simple per-file lock and atomic replace to avoid corrupting
-state when multiple harness commands run at the same time.
+state when multiple harness commands run at the same time. Claims use a stable
+id plus ordered `revision_id`, `revision`, and `supersedes_revision_id` fields.
+Typed evidence edges are append-only and use validated `{type, id}` endpoints,
+making support, refutation, corroboration, contradiction, derivation,
+reproduction, documentation, causation, supersession, and retraction
+independently searchable.
 
 On macOS, commands that read or mutate initialized state automatically perform
 the File Provider readiness check first. Use `state preflight` directly when
@@ -182,6 +200,7 @@ python3 scripts/mission_harness.py --root /tmp/example-agent index rebuild
 python3 scripts/mission_harness.py --root /tmp/example-agent index search current_state
 python3 scripts/mission_harness.py --root /tmp/example-agent index status
 python3 scripts/mission_records_recent.py --root /tmp/example-agent claims --limit 5
+python3 scripts/mission_records_recent.py --root /tmp/example-agent relations --limit 5
 python3 scripts/mission_harness.py --root /tmp/example-agent validate
 python3 scripts/mission_artifact_materialize.py --root /tmp/example-agent --path .agent/current_state.md
 python3 scripts/mission_artifact_materialize.py --root /tmp/example-agent --path .agent/current_state.md --stage-copy /tmp/example-agent/staged-state.md
@@ -192,6 +211,8 @@ python3 scripts/mission_artifact_materialize.py --root /tmp/example-agent --path
 - The harness cannot wake a finished parent-agent turn or inject a new chat message by itself. User-facing completion and blocked notifications require host wait/mailbox support or an external notification bridge.
 - SQLite is a derived search index only. Markdown and JSON/JSONL remain the authoritative state.
 - `validate` performs built-in sanity checks; it does not require the external `jsonschema` package.
+- Existing `claims.v1` missions remain readable and are losslessly promoted to ordered `claims.v2` revisions on their next claim write. Original claim fields are retained and marked as a legacy revision.
+- Artifact ids used as relationship endpoints must be unique. Older missions may retain duplicate artifact ids, but the harness rejects an ambiguous relationship until the evidence is registered under a unique id.
 - The harness is domain-neutral. Tool-specific or project-specific evidence belongs in the project using the harness.
 - `current_state.md` is generated from recorded state plus the active live control sections for an open run, and should not be the only copy of important claims or artifacts.
 - File Provider hydration is attempted automatically for initialized state operations on macOS; readiness reads time out rather than leaving the command stalled if content is not available promptly.

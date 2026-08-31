@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "claim_revision.v2.schema.json",
+  "title": "Append-Only Claim Revision",
+  "type": "object",
+  "required": [
+    "id",
+    "revision_id",
+    "revision",
+    "timestamp",
+    "source_run_id",
+    "supersedes_revision_id",
+    "claim",
+    "source_path",
+    "source_kind",
+    "status",
+    "verification_command",
+    "last_checked_at",
+    "confidence",
+    "notes",
+    "evidence_relation_ids"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "revision_id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "timestamp": { "type": "string" },
+    "source_run_id": { "type": "string" },
+    "supersedes_revision_id": { "type": "string" },
+    "claim": { "type": "string", "minLength": 1 },
+    "source_path": { "type": "string" },
+    "source_kind": { "type": "string" },
+    "status": {
+      "enum": [
+        "proposed",
+        "claimed",
+        "implemented",
+        "tested",
+        "documented",
+        "disproved",
+        "broken",
+        "stale",
+        "removed"
+      ]
+    },
+    "verification_command": { "type": "string" },
+    "last_checked_at": { "type": "string" },
+    "confidence": { "type": "string" },
+    "notes": { "type": "string" },
+    "evidence_relation_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": true
+}

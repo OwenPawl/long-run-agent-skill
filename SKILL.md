@@ -24,6 +24,11 @@ harness:
 python3 <skill-path>/scripts/install_skill.py --json
 python3 <skill-path>/scripts/mission_harness.py --root <project-root> init
 python3 <skill-path>/scripts/mission_harness.py --root <project-root> run start --goal "bounded task"
+python3 <skill-path>/scripts/mission_harness.py --root <project-root> claim add --id <claim-id> --claim "..." --source-path <path> --source-kind <kind> --status tested
+python3 <skill-path>/scripts/mission_harness.py --root <project-root> claim disprove --id <claim-id> --evidence-artifact <artifact-id> --notes "..."
+python3 <skill-path>/scripts/mission_harness.py --root <project-root> claim history --id <claim-id>
+python3 <skill-path>/scripts/mission_harness.py --root <project-root> relation add --source-type artifact --source-id <artifact-id> --relation supports --target-type claim_revision --target-id <revision-id>
+python3 <skill-path>/scripts/mission_harness.py --root <project-root> relation list --endpoint-type claim --endpoint-id <claim-id>
 python3 <skill-path>/scripts/mission_harness.py --root <project-root> run close --outcome "..." --command "..." --test "..." --next-action "..."
 python3 <skill-path>/scripts/mission_harness.py --root <project-root> friction add --category verification_gap --description "..." --impact "..." --proposed-harness-need "..."
 python3 <skill-path>/scripts/mission_harness.py --root <project-root> friction settle --id <friction-id> --status consolidated --root-cause-id <root-id> --release-disposition deferred --rationale "..."
@@ -36,6 +41,7 @@ python3 <skill-path>/scripts/mission_harness.py --root <project-root> index rebu
 python3 <skill-path>/scripts/mission_harness.py --root <project-root> index search "query terms"
 python3 <skill-path>/scripts/mission_harness.py --root <project-root> index status
 python3 <skill-path>/scripts/mission_records_recent.py --root <project-root> claims --limit 5
+python3 <skill-path>/scripts/mission_records_recent.py --root <project-root> relations --limit 5
 python3 <skill-path>/scripts/mission_artifact_materialize.py --root <project-root> --id <artifact-id>
 python3 <skill-path>/scripts/mission_artifact_materialize.py --root <project-root> --path <new-evidence-path>
 python3 <skill-path>/scripts/mission_artifact_materialize.py --root <project-root> --path <input-path> --stage-copy /private/tmp/<stable-input>
@@ -54,7 +60,8 @@ the only mission truth store.
 The harness creates a `.agent/` directory with a human-readable control plane
 (`live.md`), durable Markdown state (`current_state.md`, `constitution.md`,
 `known_failures.md`, `decisions.md`), and portable structured records
-(`runs.jsonl`, `claims.json`, `artifacts.json`, `friction.jsonl`).
+(`runs.jsonl`, `claims.json`, `artifacts.json`, `friction.jsonl`,
+`evidence_relations.jsonl`).
 
 Use it when a run needs to preserve claims, artifacts, failures, verification,
 and process friction over time. Do not use it to add ceremony. If a piece of
@@ -64,11 +71,12 @@ Operational rules:
 
 1. At the beginning of substantial work, read `.agent/live.md`,
    `.agent/current_state.md`, `.agent/known_failures.md`,
-   `.agent/decisions.md`, `.agent/claims.json`, and recent `.agent/runs.jsonl`
-   records when they exist.
+   `.agent/decisions.md`, `.agent/claims.json`,
+   `.agent/evidence_relations.jsonl`, and recent `.agent/runs.jsonl` records
+   when they exist.
 2. Before major or hard-to-unwind steps, re-read `.agent/live.md`.
 3. At run close, record commands, tests, files changed, failures, claims,
-   artifacts, and next actions with `run close`.
+   artifacts, evidence relationship ids, and next actions with `run close`.
 4. Record process or tooling pain with `friction add` instead of burying it in
    chat-only notes. If the pain repeats a known pattern, attach
    `--root-cause-id` or settle the old item instead of creating another
@@ -104,6 +112,15 @@ Operational rules:
     evidence, but consolidate it around root causes, release dispositions, and
     verification paths so future agents can tell repeated evidence from
     independent unresolved issues.
+14. Treat claims as append-only revisions. Reuse the stable claim id with
+    `claim add` to advance it; inspect `claim history` rather than overwriting
+    prior conclusions. When evidence disproves a claim, register that evidence
+    as uniquely identified artifacts and use `claim disprove`. Never use a
+    generic status edit that severs the disproval from its evidence.
+15. Use `relation add` for explicit support, refutation, corroboration,
+    contradiction, derivation, reproduction, documentation, causation,
+    supersession, or retraction. Both typed endpoints must resolve, and an
+    artifact endpoint must have a unique id.
 
 ## Main-Thread Workflow
 
