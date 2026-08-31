@@ -75,6 +75,7 @@ def register_mission_tools(server: Any, settings: HarnessSettings | None = None)
         failures: list[str] | None = None,
         claims: list[str] | None = None,
         artifacts: list[str] | None = None,
+        relations: list[str] | None = None,
         decisions: list[str] | None = None,
         next_actions: list[str] | None = None,
         no_verification_reason: str = "",
@@ -89,6 +90,7 @@ def register_mission_tools(server: Any, settings: HarnessSettings | None = None)
         append_options(args, "--failure", failures)
         append_options(args, "--claim", claims)
         append_options(args, "--artifact", artifacts)
+        append_options(args, "--relation", relations)
         append_options(args, "--decision", decisions)
         append_options(args, "--next-action", next_actions)
         add_option(args, "--no-verification-reason", no_verification_reason)
@@ -139,11 +141,12 @@ def register_mission_tools(server: Any, settings: HarnessSettings | None = None)
         status: str,
         verification_command: str = "",
         claim_id: str = "",
+        run_id: str = "",
         last_checked_at: str = "",
         confidence: str = "unverified",
         notes: str = "",
     ) -> dict[str, Any]:
-        """Create or replace a claim whose trust is tied to a verification path."""
+        """Append a claim revision whose trust is tied to a verification path."""
         args = [
             "claim",
             "add",
@@ -159,9 +162,85 @@ def register_mission_tools(server: Any, settings: HarnessSettings | None = None)
             confidence,
         ]
         add_option(args, "--id", claim_id)
+        add_option(args, "--run-id", run_id)
         add_option(args, "--verification-command", verification_command)
         add_option(args, "--last-checked-at", last_checked_at)
         add_option(args, "--notes", notes)
+        return runner.run(root, args)
+
+    @tool("mission_claim_disprove")
+    def mission_claim_disprove(
+        root: str,
+        claim_id: str,
+        evidence_artifacts: list[str],
+        run_id: str = "",
+        verification_command: str = "",
+        last_checked_at: str = "",
+        confidence: str = "verified",
+        notes: str = "",
+    ) -> dict[str, Any]:
+        """Append a disproved revision and link each artifact as refuting evidence."""
+        args = ["claim", "disprove", "--id", claim_id]
+        append_options(args, "--evidence-artifact", evidence_artifacts)
+        add_option(args, "--run-id", run_id)
+        add_option(args, "--verification-command", verification_command)
+        add_option(args, "--last-checked-at", last_checked_at)
+        add_option(args, "--confidence", confidence)
+        add_option(args, "--notes", notes)
+        return runner.run(root, args)
+
+    @tool("mission_claim_history")
+    def mission_claim_history(root: str, claim_id: str) -> dict[str, Any]:
+        """Read every immutable revision and evidence relationship for one claim."""
+        return runner.run(root, ["claim", "history", "--id", claim_id])
+
+    @tool("mission_relation_add")
+    def mission_relation_add(
+        root: str,
+        source_type: str,
+        source_id: str,
+        relation: str,
+        target_type: str,
+        target_id: str,
+        relation_id: str = "",
+        run_id: str = "",
+        confidence: str = "unverified",
+        notes: str = "",
+    ) -> dict[str, Any]:
+        """Append a typed relationship between durable mission records."""
+        args = [
+            "relation",
+            "add",
+            "--source-type",
+            source_type,
+            "--source-id",
+            source_id,
+            "--relation",
+            relation,
+            "--target-type",
+            target_type,
+            "--target-id",
+            target_id,
+            "--confidence",
+            confidence,
+        ]
+        add_option(args, "--id", relation_id)
+        add_option(args, "--run-id", run_id)
+        add_option(args, "--notes", notes)
+        return runner.run(root, args)
+
+    @tool("mission_relation_list")
+    def mission_relation_list(
+        root: str,
+        endpoint_type: str = "",
+        endpoint_id: str = "",
+        relation: str = "",
+    ) -> dict[str, Any]:
+        """List typed relationships, optionally filtering by endpoint and relation."""
+        args = ["relation", "list"]
+        add_option(args, "--endpoint-type", endpoint_type)
+        add_option(args, "--endpoint-id", endpoint_id)
+        add_option(args, "--relation", relation)
         return runner.run(root, args)
 
     @tool("mission_artifact_add")
@@ -226,8 +305,9 @@ def register_mission_tools(server: Any, settings: HarnessSettings | None = None)
 MISSION_OPERATING_CONTRACT = (
     "Use mission_init once, then mission_run_start for substantial work. Read "
     "mission_control_read at startup and before major steps, passing the prior SHA-256 "
-    "to avoid duplicate context. Preserve claims with verification paths, artifacts, "
-    "failures, and friction in durable records. Repeated friction should reference a "
+    "to avoid duplicate context. Preserve claims as append-only revisions with verification "
+    "paths, and use typed evidence relationships when artifacts support or refute them. "
+    "Preserve failures and friction in durable records. Repeated friction should reference a "
     "known root cause rather than inflate the actionable open set. Close every run with "
     "commands/tests or an explicit no-verification reason, then summarize and validate."
 )

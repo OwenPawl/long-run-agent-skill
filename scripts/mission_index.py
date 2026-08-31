@@ -14,6 +14,8 @@ import sqlite3
 import time
 from typing import Any
 
+from mission_evidence import upgraded_claims
+
 
 DB_NAME = "mission_index.sqlite"
 MARKDOWN_FILES = ["live.md", "current_state.md", "constitution.md", "known_failures.md", "decisions.md"]
@@ -156,6 +158,7 @@ def iter_records(root: pathlib.Path) -> list[dict[str, Any]]:
                 "failures",
                 "claims_touched",
                 "artifacts_produced",
+                "evidence_relations",
                 "next_actions",
                 "no_verification_reason",
             ],
@@ -190,19 +193,63 @@ def iter_records(root: pathlib.Path) -> list[dict[str, Any]]:
             )
         )
 
-    claims = load_json(directory / "claims.json", {"claims": []}).get("claims", [])
+    claims_data = load_json(directory / "claims.json", {"schema_version": "claims.v2", "claims": []})
+    claims = upgraded_claims(claims_data)[0].get("claims", [])
+    latest_claims: dict[str, dict[str, Any]] = {}
     for claim in claims if isinstance(claims, list) else []:
         if not isinstance(claim, dict):
             continue
+        latest_claims[str(claim.get("id", ""))] = claim
+        records.append(
+            make_record(
+                kind="claim_revision",
+                source_file=".agent/claims.json",
+                source_id=str(claim.get("revision_id", "")),
+                run_id=str(claim.get("source_run_id", "")),
+                timestamp=str(claim.get("timestamp", "")),
+                title=str(claim.get("claim", "")),
+                body=compact_payload(
+                    claim,
+                    [
+                        "id",
+                        "revision",
+                        "source_path",
+                        "source_kind",
+                        "verification_command",
+                        "last_checked_at",
+                        "confidence",
+                        "notes",
+                        "evidence_relation_ids",
+                    ],
+                ),
+                status=str(claim.get("status", "")),
+                path=str(claim.get("source_path", "")),
+                payload=claim,
+            )
+        )
+
+    for claim_id, claim in latest_claims.items():
         records.append(
             make_record(
                 kind="claim",
                 source_file=".agent/claims.json",
-                source_id=str(claim.get("id", "")),
+                source_id=claim_id,
+                run_id=str(claim.get("source_run_id", "")),
+                timestamp=str(claim.get("timestamp", "")),
                 title=str(claim.get("claim", "")),
                 body=compact_payload(
                     claim,
-                    ["source_path", "source_kind", "verification_command", "last_checked_at", "confidence", "notes"],
+                    [
+                        "revision_id",
+                        "revision",
+                        "source_path",
+                        "source_kind",
+                        "verification_command",
+                        "last_checked_at",
+                        "confidence",
+                        "notes",
+                        "evidence_relation_ids",
+                    ],
                 ),
                 status=str(claim.get("status", "")),
                 path=str(claim.get("source_path", "")),
@@ -225,6 +272,21 @@ def iter_records(root: pathlib.Path) -> list[dict[str, Any]]:
                 body=compact_payload(artifact, ["path", "kind", "verification_command", "notes"]),
                 path=str(artifact.get("path", "")),
                 payload=artifact,
+            )
+        )
+
+    for relation in read_jsonl(directory / "evidence_relations.jsonl"):
+        records.append(
+            make_record(
+                kind="evidence_relation",
+                source_file=".agent/evidence_relations.jsonl",
+                source_id=str(relation.get("id", "")),
+                run_id=str(relation.get("source_run_id", "")),
+                timestamp=str(relation.get("timestamp", "")),
+                title=str(relation.get("relation", "")),
+                body=compact_payload(relation, ["source", "target", "confidence", "notes"]),
+                category=str(relation.get("relation", "")),
+                payload=relation,
             )
         )
 

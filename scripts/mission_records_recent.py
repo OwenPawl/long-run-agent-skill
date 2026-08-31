@@ -15,6 +15,7 @@ KIND_FILES = {
     "claims": ("claims.json", "json:claims"),
     "artifacts": ("artifacts.json", "json:artifacts"),
     "friction": ("friction.jsonl", "jsonl"),
+    "relations": ("evidence_relations.jsonl", "jsonl"),
 }
 
 

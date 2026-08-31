@@ -3,7 +3,7 @@
 
 The harness is intentionally file-based:
 - Markdown keeps the live control plane and durable state readable.
-- JSON/JSONL keeps run, claim, artifact, and friction records portable.
+- JSON/JSONL keeps run, claim revision, artifact, relationship, and friction records portable.
 """
 
 from __future__ import annotations
@@ -32,6 +32,13 @@ from mission_friction import (
     cmd_friction_report,
     cmd_friction_settle,
     effective_friction_records,
+)
+from mission_evidence import (
+    CLAIM_STATUSES,
+    EvidenceError,
+    add_evidence_parsers,
+    default_claims,
+    validate_evidence_state,
 )
 
 
@@ -78,17 +85,6 @@ FRICTION_CATEGORIES = [
     "overengineering_risk",
 ]
 
-CLAIM_STATUSES = [
-    "proposed",
-    "claimed",
-    "implemented",
-    "tested",
-    "documented",
-    "broken",
-    "stale",
-    "removed",
-]
-
 AGENT_STATE_FILES = [
     "live.md",
     "current_state.md",
@@ -99,6 +95,7 @@ AGENT_STATE_FILES = [
     "claims.json",
     "artifacts.json",
     "friction.jsonl",
+    "evidence_relations.jsonl",
 ]
 
 class HarnessError(RuntimeError):
@@ -284,10 +281,6 @@ No durable decisions recorded yet.
 """
 
 
-def default_claims() -> dict[str, Any]:
-    return {"schema_version": "claims.v1", "claims": []}
-
-
 def default_artifacts() -> dict[str, Any]:
     return {"schema_version": "artifacts.v1", "artifacts": []}
 
@@ -336,6 +329,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     ensure_text_file(directory / "decisions.md", decisions_template(), args.force)
     ensure_empty_file(directory / "runs.jsonl", args.force)
     ensure_empty_file(directory / "friction.jsonl", args.force)
+    ensure_empty_file(directory / "evidence_relations.jsonl", args.force)
     ensure_json_file(directory / "claims.json", default_claims(), args.force)
     ensure_json_file(directory / "artifacts.json", default_artifacts(), args.force)
     print(f"initialized mission harness: {directory}")
@@ -427,6 +421,13 @@ def cmd_run_close(args: argparse.Namespace) -> int:
     artifacts = unique(
         (args.artifact or []) + section_entries_with_archives(directory, live_text, "Artifacts Produced")
     )
+    relations = unique(args.relation or [])
+    registered_relation_ids = {
+        str(record.get("id", "")) for record in read_jsonl(path_for(root, "evidence_relations.jsonl"))
+    }
+    missing_relations = [relation_id for relation_id in relations if relation_id not in registered_relation_ids]
+    if missing_relations:
+        raise HarnessError(f"run close references unknown evidence relations: {', '.join(missing_relations)}")
     # Closing next actions are forward-looking. If the caller provides an
     # explicit list, prefer it over stale live.md planning notes from the run.
     next_actions = unique(args.next_action or section_entries(live_text, "Next Actions"))
@@ -449,6 +450,7 @@ def cmd_run_close(args: argparse.Namespace) -> int:
         "failures": failures,
         "claims_touched": claims,
         "artifacts_produced": artifacts,
+        "evidence_relations": relations,
         "next_actions": next_actions,
         "no_verification_reason": args.no_verification_reason or "",
         "status": "closed",
@@ -475,40 +477,6 @@ def cmd_run_close(args: argparse.Namespace) -> int:
     )
     summarize_state(root)
     print(json.dumps({"run_id": run_id, "timestamp": timestamp, "status": "closed"}, sort_keys=True))
-    return 0
-
-
-def cmd_claim_add(args: argparse.Namespace) -> int:
-    root = pathlib.Path(args.root)
-    require_initialized(root)
-    path = path_for(root, "claims.json")
-    claim_id = args.id or short_id("claim")
-    record = {
-        "id": claim_id,
-        "claim": args.claim,
-        "source_path": args.source_path,
-        "source_kind": args.source_kind,
-        "status": args.status,
-        "verification_command": args.verification_command or "",
-        "last_checked_at": args.last_checked_at or "",
-        "confidence": args.confidence,
-        "notes": args.notes or "",
-    }
-
-    def updater(data: dict[str, Any]) -> bool:
-        claims = data.setdefault("claims", [])
-        replaced = False
-        for index, existing in enumerate(claims):
-            if existing.get("id") == claim_id:
-                claims[index] = record
-                replaced = True
-                break
-        if not replaced:
-            claims.append(record)
-        return replaced
-
-    replaced = update_json(path, updater)
-    print(json.dumps({"id": claim_id, "updated": replaced}, sort_keys=True))
     return 0
 
 
@@ -552,6 +520,8 @@ def summarize_state(root: pathlib.Path) -> None:
     ambiguous_friction = ambiguous_open_records(effective_friction)
     claims = load_json(path_for(root, "claims.json")).get("claims", [])
     artifacts = load_json(path_for(root, "artifacts.json")).get("artifacts", [])
+    relations = read_jsonl(path_for(root, "evidence_relations.jsonl"))
+    current_claim_count = len({str(claim.get("id", "")) for claim in claims if isinstance(claim, dict)})
     last_start = latest_record(records, "run_start")
     last_close = latest_record(records, "run_close")
     open_run = latest_open_run(records)
@@ -565,8 +535,10 @@ def summarize_state(root: pathlib.Path) -> None:
         f"- Updated: {utc_now()}",
         f"- Open run: {open_run or 'none'}",
         f"- Total run records: {len(records)}",
-        f"- Claims recorded: {len(claims)}",
+        f"- Current claims: {current_claim_count}",
+        f"- Claim revisions recorded: {len(claims)}",
         f"- Artifacts recorded: {len(artifacts)}",
+        f"- Evidence relationships recorded: {len(relations)}",
         f"- Friction records: {len(friction)} raw / {len(effective_friction)} effective",
         f"- Ambiguous open friction: {len(ambiguous_friction)}",
         "",
@@ -621,6 +593,7 @@ def cmd_state_preflight(args: argparse.Namespace) -> int:
     from mission_state_preflight import prepare_agent_state
 
     root = pathlib.Path(args.root)
+    ensure_evidence_extension(root)
     require_initialized(root)
     result = prepare_agent_state(agent_dir(root), AGENT_STATE_FILES)
     print(json.dumps(result, indent=2, sort_keys=True))
@@ -629,12 +602,21 @@ def cmd_state_preflight(args: argparse.Namespace) -> int:
 
 def prepare_command_state(root: pathlib.Path) -> None:
     directory = agent_dir(root)
+    ensure_evidence_extension(root)
     if not directory.exists() or any(not (directory / name).exists() for name in AGENT_STATE_FILES):
         return
     from mission_state_preflight import prepare_agent_state
     result = prepare_agent_state(directory, AGENT_STATE_FILES)
     if not result["ok"]:
         raise HarnessError("state readiness failed: " + "; ".join(result["errors"]))
+
+
+def ensure_evidence_extension(root: pathlib.Path) -> None:
+    directory = agent_dir(root)
+    relation_path = directory / "evidence_relations.jsonl"
+    legacy_files = [name for name in AGENT_STATE_FILES if name != "evidence_relations.jsonl"]
+    if directory.exists() and all((directory / name).exists() for name in legacy_files) and not relation_path.exists():
+        ensure_empty_file(relation_path, False)
 
 
 def _registered_reference_keys(records: list[dict[str, Any]], fields: tuple[str, ...]) -> set[str]:
@@ -803,6 +785,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         errors.extend(validate_friction(root))
         errors.extend(validate_claims(root))
         errors.extend(validate_artifacts(root))
+        errors.extend(validate_evidence_state(root, CLAIM_STATUSES))
     except HarnessError as exc:
         errors.append(str(exc))
     if errors:
@@ -848,6 +831,7 @@ def build_parser() -> argparse.ArgumentParser:
     close_parser.add_argument("--failure", action="append", help="failure, blocker, or retry condition")
     close_parser.add_argument("--claim", action="append", help="claim id or claim summary touched")
     close_parser.add_argument("--artifact", action="append", help="artifact id or path produced")
+    close_parser.add_argument("--relation", action="append", help="evidence relationship id recorded")
     close_parser.add_argument("--decision", action="append", help="durable decision made during this run")
     close_parser.add_argument("--next-action", action="append", help="next action after this run")
     close_parser.add_argument("--no-verification-reason", help="explicit reason no command/test was run")
@@ -904,19 +888,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     friction_report.set_defaults(func=cmd_friction_report)
 
-    claim_parser = subcommands.add_parser("claim", help="create or update a claim record")
-    claim_subcommands = claim_parser.add_subparsers(dest="claim_command", required=True)
-    claim_add = claim_subcommands.add_parser("add", help="add or replace a claim")
-    claim_add.add_argument("--id", help="explicit claim id; otherwise generated")
-    claim_add.add_argument("--claim", required=True)
-    claim_add.add_argument("--source-path", required=True)
-    claim_add.add_argument("--source-kind", required=True)
-    claim_add.add_argument("--status", required=True, choices=CLAIM_STATUSES)
-    claim_add.add_argument("--verification-command", help="command that verifies the claim")
-    claim_add.add_argument("--last-checked-at", help="ISO timestamp when verification last ran")
-    claim_add.add_argument("--confidence", default="unverified")
-    claim_add.add_argument("--notes", help="short notes")
-    claim_add.set_defaults(func=cmd_claim_add)
+    add_evidence_parsers(subcommands)
 
     artifact_parser = subcommands.add_parser("artifact", help="record an artifact")
     artifact_subcommands = artifact_parser.add_subparsers(dest="artifact_command", required=True)
@@ -964,7 +936,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command != "init" and not (args.command == "state" and args.state_command == "preflight"):
             prepare_command_state(pathlib.Path(args.root))
         return args.func(args)
-    except (HarnessError, FrictionError, LiveStateError) as exc:
+    except (HarnessError, EvidenceError, FrictionError, LiveStateError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
