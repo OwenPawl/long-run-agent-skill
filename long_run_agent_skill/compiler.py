@@ -8,6 +8,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from .code_actions import annotation_revision_opportunities
 from .context import ContextQueryMixin
 from .errors import LedgerError, SemanticError
 from .recall import entity_catalog, operation_entity_ids, recall, relation_suggestions
@@ -15,6 +16,7 @@ from .reducer import reduce_operations
 from .store import GENESIS_HASH, LedgerStore
 from .util import atomic_write_json, random_id, stable_id, utc_now
 from .views import sqlite_metadata, state_hash, write_views
+from .worker_state import material_state, operation_references
 
 SUPPORTED_OPERATIONS = {
     "mission.started",
@@ -288,6 +290,11 @@ class EpistemicCompiler(ContextQueryMixin):
                 rewrite_reference(reference)
             for reference in data.get("grounds", []):
                 rewrite_reference(reference)
+            for reference in data.get("inputs", []):
+                rewrite_reference(reference)
+            for reference in data.get("basis", []):
+                if isinstance(reference, dict) and reference.get("type") != "feature":
+                    rewrite_reference(reference)
             if isinstance(data.get("target"), dict):
                 rewrite_reference(data["target"])
             if isinstance(data.get("artifact_ref"), dict):
@@ -327,6 +334,16 @@ class EpistemicCompiler(ContextQueryMixin):
                 }
                 data["id"] = data.get("id") or stable_id("attack", semantic)
                 introduced["attack"].add(data["id"])
+            elif kind == "relation.asserted":
+                if not data.get("relation"):
+                    raise SemanticError("relation type is required")
+                semantic = {
+                    key: data.get(key)
+                    for key in ("source", "target", "relation", "basis")
+                }
+                data["id"] = data.get("id") or stable_id("relation", semantic)
+                data.setdefault("basis", [])
+                introduced["relation"].add(data["id"])
             else:
                 event_to_type = {
                     "artifact.registered": "artifact",
@@ -335,7 +352,6 @@ class EpistemicCompiler(ContextQueryMixin):
                     "question.opened": "question",
                     "decision.recorded": "decision",
                     "warrant.registered": "warrant",
-                    "relation.asserted": "relation",
                 }
                 entity_type = event_to_type.get(kind)
                 if entity_type and data.get("id"):
@@ -360,6 +376,11 @@ class EpistemicCompiler(ContextQueryMixin):
                 list(data.get("premises", []))
                 + list(data.get("grounds", []))
                 + list(data.get("inputs", []))
+                + [
+                    item
+                    for item in data.get("basis", [])
+                    if isinstance(item, dict) and item.get("type") != "feature"
+                ]
             )
             if isinstance(data.get("source"), dict):
                 references.append(data["source"])
@@ -396,6 +417,25 @@ class EpistemicCompiler(ContextQueryMixin):
                     raise SemanticError("argument requires at least one grounded premise")
                 if not data.get("warrant"):
                     raise SemanticError("argument requires an explicit warrant")
+            if item["type"] in {"annotation.created", "annotation.revised"}:
+                entity_type = data.get("entity_type", "")
+                entity_id = data.get("entity_id", "")
+                if entity_type not in available or entity_id not in available[entity_type]:
+                    raise SemanticError(
+                        f"cannot annotate missing {entity_type or 'unknown'} entity: {entity_id}"
+                    )
+            if item["type"] in {
+                "claim.withdrawn",
+                "assumption.withdrawn",
+                "argument.retracted",
+                "attack.retracted",
+            }:
+                entity_type = item["type"].split(".", 1)[0]
+                entity_id = data.get("id", "")
+                if entity_id not in available.get(entity_type, set()):
+                    raise SemanticError(
+                        f"cannot revise missing {entity_type}: {entity_id}"
+                    )
             for reference in references:
                 entity_type, entity_id = reference.get("type", ""), reference.get("id", "")
                 if entity_type not in available or entity_id not in available[entity_type]:
@@ -451,13 +491,28 @@ class EpistemicCompiler(ContextQueryMixin):
 
     def _preview_parts(
         self, prepared: list[dict[str, Any]], old_state: dict[str, Any], generation: int
-    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
         synthetic = self._synthetic_operations(self.store.all_operations(), prepared, generation)
         new_state = reduce_operations(synthetic, self.store.load_policy())
         excluded = self._worker_scope(old_state)
         recalled = recall(old_state, new_state, prepared, self.store.load_policy(), excluded_ids=excluded)
         suggestions = relation_suggestions(old_state, new_state, prepared)
-        return new_state, recalled, suggestions, self._changes(old_state, new_state)
+        opportunities = annotation_revision_opportunities(
+            new_state, prepared, recalled
+        )
+        return (
+            new_state,
+            recalled,
+            suggestions,
+            opportunities,
+            self._changes(old_state, new_state),
+        )
 
     def preview(self, delta: dict[str, Any]) -> dict[str, Any]:
         old_state = self.state()
@@ -470,11 +525,15 @@ class EpistemicCompiler(ContextQueryMixin):
                 "proposed": {"operations": [], "deduplicated": deduplicated},
                 "derived": {"changes": [], "state_hash": state_hash(old_state)},
                 "diagnostics": {"items": [], "complete": True},
-                "suggested": {"relations": [], "authoritative": False},
+                "suggested": {
+                    "relations": [],
+                    "annotation_revisions": [],
+                    "authoritative": False,
+                },
                 "recall": {"capsules": [], "complete": True},
                 "precondition": head,
             }
-        new_state, recalled, suggestions, changes = self._preview_parts(
+        new_state, recalled, suggestions, opportunities, changes = self._preview_parts(
             prepared, old_state, head["generation"] + 1
         )
         return {
@@ -483,7 +542,11 @@ class EpistemicCompiler(ContextQueryMixin):
             "proposed": {"operations": prepared, "deduplicated": deduplicated},
             "derived": {"changes": changes, "state_hash": state_hash(new_state)},
             "diagnostics": {"items": new_state["diagnostics"], "complete": True},
-            "suggested": {"relations": suggestions, "authoritative": False},
+            "suggested": {
+                "relations": suggestions,
+                "annotation_revisions": opportunities,
+                "authoritative": False,
+            },
             "recall": recalled,
             "precondition": head,
         }
@@ -492,6 +555,7 @@ class EpistemicCompiler(ContextQueryMixin):
         self,
         prepared: list[dict[str, Any]],
         old_state: dict[str, Any],
+        new_state: dict[str, Any],
         recalled: dict[str, Any],
         suggestions: list[dict[str, Any]],
         generation: int,
@@ -504,7 +568,16 @@ class EpistemicCompiler(ContextQueryMixin):
                 "context_key": recalled["context_key"],
                 "seed_entity_ids": recalled["seed_entity_ids"],
                 "entity_ids": [item["entity_id"] for item in recalled["capsules"]],
+                "entity_states": {
+                    item["entity_id"]: material_state(
+                        item["entity_id"],
+                        entity_catalog(new_state)[item["entity_id"]],
+                        new_state,
+                    )
+                    for item in recalled["capsules"]
+                },
                 "candidates": recalled["candidates"],
+                "capsules": recalled["capsules"],
                 "policy_version": self.store.load_policy()["schema_version"],
             }
             telemetry.append(operation("retrieval.surfaced", **event_data))
@@ -514,30 +587,30 @@ class EpistemicCompiler(ContextQueryMixin):
             if event.get("event") == "retrieval.surfaced"
             for entity_id in event.get("entity_ids", [])
         }
-        structurally_used: set[str] = set()
+        referenced, structural = operation_references(prepared)
+        referenced &= surfaced_ids
+        structurally_used = structural & surfaced_ids
         use_sources: dict[str, str] = {}
         latest_surface: dict[str, str] = {}
         for event in old_state.get("retrieval_events", []):
             if event.get("event") == "retrieval.surfaced":
                 for entity_id in event.get("entity_ids", []):
                     latest_surface[entity_id] = event.get("id", "")
-        for item in prepared:
-            data = item["data"]
-            referenced = {
-                reference.get("id", "")
-                for reference in data.get("premises", []) + data.get("grounds", [])
-            }
-            referenced.update(data.get("basis_claim_ids", []))
-            referenced.update(data.get("evidence_ids", []))
-            referenced.update(
-                assumption.get("assumption_id", "") for assumption in data.get("assumptions", [])
+        for entity_id in referenced:
+            use_sources[entity_id] = latest_surface.get(entity_id, "")
+        if referenced:
+            telemetry.append(
+                operation(
+                    "retrieval.referenced",
+                    id=stable_id(
+                        "retrieval_reference",
+                        {"generation": generation, "ids": sorted(referenced)},
+                    ),
+                    context_key="semantic_reference",
+                    entity_ids=sorted(referenced),
+                    source_event_ids=use_sources,
+                )
             )
-            for key in ("source", "target"):
-                if isinstance(data.get(key), dict):
-                    referenced.add(data[key].get("id", ""))
-            for entity_id in referenced & surfaced_ids:
-                structurally_used.add(entity_id)
-                use_sources[entity_id] = latest_surface.get(entity_id, "")
         if structurally_used:
             telemetry.append(
                 operation(
@@ -574,7 +647,11 @@ class EpistemicCompiler(ContextQueryMixin):
                 },
                 "derived": {"changes": [], "state_hash": state_hash(old_state)},
                 "diagnostics": {"items": [], "complete": True},
-                "suggested": {"relations": [], "authoritative": False},
+                "suggested": {
+                    "relations": [],
+                    "annotation_revisions": [],
+                    "authoritative": False,
+                },
                 "recall": {"capsules": [], "complete": True},
             }
         generation = head["generation"] + 1
@@ -594,8 +671,16 @@ class EpistemicCompiler(ContextQueryMixin):
             excluded_ids=self._worker_scope(old_state),
         )
         suggestions = relation_suggestions(old_state, committed_state, prepared)
+        opportunities = annotation_revision_opportunities(
+            committed_state, prepared, recalled
+        )
         telemetry = self._automatic_telemetry(
-            prepared, old_state, recalled, suggestions, transaction["sequence"]
+            prepared,
+            old_state,
+            committed_state,
+            recalled,
+            suggestions,
+            transaction["sequence"],
         )
         telemetry_transaction = None
         if telemetry:
@@ -625,7 +710,11 @@ class EpistemicCompiler(ContextQueryMixin):
             },
             "derived": {"changes": changes, **materialized},
             "diagnostics": {"items": new_state["diagnostics"], "complete": True},
-            "suggested": {"relations": suggestions, "authoritative": False},
+            "suggested": {
+                "relations": suggestions,
+                "annotation_revisions": opportunities,
+                "authoritative": False,
+            },
             "recall": recalled,
             "telemetry": {
                 "transaction_id": telemetry_transaction["transaction_id"] if telemetry_transaction else "",

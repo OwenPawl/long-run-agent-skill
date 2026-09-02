@@ -16,7 +16,7 @@ The compiler separates five result classes:
 - committed: semantic operations durably appended by the requested write
 - derived: deterministic consequences such as support, applicability, and impact
 - diagnostics: invalid or newly unsafe reasoning plus concrete repair paths
-- suggested: non-authoritative relation candidates requiring explicit acceptance
+- suggested: non-authoritative relation and annotation-revision candidates
 - recall: bounded historical context selected for the current operation
 
 Evidence and provenance are not arguments. Claims gain support through explicit
@@ -105,9 +105,10 @@ EpistemicDelta JSON object and an optional generation precondition.
 - close records the outcome and next actions without discarding history.
 
 Queries cover belief, why, why-not, defeaters, assumptions, impact, unknowns,
-history, changes-since, revalidate, search, and telemetry. context returns bounded
-WorkerScope and ActiveDelta sections with explicit completeness and continuation
-metadata. expand retrieves the cheapest useful representation of one entity.
+history, changes-since, revalidate, search, telemetry, and worker-state. context
+returns bounded WorkerScope and ActiveDelta sections with explicit completeness
+and continuation metadata. expand retrieves the cheapest useful representation
+of one entity.
 
 When evidence, assumptions, dependencies, or attacks change, the fixed-point
 reducer recomputes affected conclusions, questions, and decisions. Diagnostics
@@ -117,15 +118,34 @@ treated as current support.
 
 ## Recall And Feedback
 
-Recall is automatic on semantic writes. It ranks compact entity capsules using
-lexical relevance, graph proximity, recency, prior utility, negative feedback,
-and correlation-aware diversity. Exact artifact identity may collapse duplicate
-artifacts; byte similarity alone never merges distinct observations.
+Recall is automatic on semantic writes. It maximizes marginal epistemic value
+using relevance to current work, material change, historical usefulness,
+corrective value, current-state coverage, and correlation-aware representative
+diversity. Current worker state tracks content coverage, salience, structural
+coverage, and recency independently. A capsule contributes weak coverage;
+expansion contributes strong content coverage; references and structural use
+affect their own dimensions. Retrieval outcome telemetry remains a separate
+model rather than an ordinal proxy for containment.
 
-Structural use of recalled material records inferred positive feedback only
-after a successful semantic commit. Dismissal is contextual and explicit.
-Accepting a suggested relation creates a normal semantic transaction; rejecting
-one only records retrieval feedback.
+Recently surfaced unchanged state is inhibited by the same coverage scoring.
+Material changes such as new defeaters, support loss, invalidated dependencies,
+reopened questions, or supersession can override that inhibition. Noncurrent
+claims and evidence are excluded from constructive recall. When a matching old
+reasoning basis makes them corrective, the capsule inseparably carries its
+historical badge, correction reason, decisive path, and known successor.
+
+Expansion, later reference, structural use, and accepted relation suggestions
+produce inferred positive outcome telemetry. Dismissal before expansion is a
+weak contextual negative; dismissal after expansion is strong. Neither globally
+demotes the entity, and non-use is neutral.
+
+Diagnostics expose non-authoritative code actions with levels, preconditions,
+expected consequences, semantic-input requirements, and a proposed
+EpistemicDelta where applicable. Preview and acceptance use the ordinary
+compiler path. Relations may carry structured basis references and an optional
+rationale. Later annotations can revise presentation wording without mutating
+the historical relation; opportunistic revision suggestions are generated only
+for already-active state, never by a cold-history cleanup scan.
 
 ## MCP
 
@@ -175,8 +195,10 @@ The test suite includes the required 20-step epistemic scenario, offline
 deterministic rebuild, fixed-point grounding, cycle rejection, independent
 support, all three attack types, dependency invalidation, diagnostics,
 questions, decisions, bounded recall/context, telemetry, checkpoint/resume,
-CLI/MCP parity, package installation, installer behavior, and the
-under-1000-line source limit.
+multidimensional worker state, repeat inhibition with material-change override,
+corrective recall, contextual feedback strength, code actions, revisable
+relation rationale, CLI/MCP parity, package installation, installer behavior,
+and the under-1000-line source limit.
 
 ## License
 

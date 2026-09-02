@@ -103,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
             "revalidate",
             "search",
             "telemetry",
+            "worker-state",
         ],
     )
     query.add_argument("--id", default="")

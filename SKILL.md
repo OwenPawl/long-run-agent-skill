@@ -130,7 +130,8 @@ Every semantic write returns separate categories:
 - committed contains only the requested durable semantic operations.
 - derived contains deterministic consequences.
 - diagnostics contains defects, changed safety, and concrete repair paths.
-- suggested contains non-authoritative relationship candidates.
+- suggested contains non-authoritative relationship and annotation-revision
+  candidates.
 - recall contains bounded historical context relevant to the operation.
 
 Never report a suggestion, recall result, generated view, or diagnostic as a
@@ -186,12 +187,31 @@ Context is divided into WorkerScope and ActiveDelta. Respect completeness flags
 and continuation cursors; do not treat a truncated response as exhaustive.
 
 Automatic recall should provide compact capsules, not inject raw history.
-Selection accounts for relevance, graph proximity, recency, prior utility,
-negative feedback, root-evidence correlation, and diversity. Expand only the
-entities needed at the cheapest useful representation.
+Selection maximizes marginal epistemic value: current-work relevance, material
+change, historical usefulness, and corrective value, less redundancy with both
+estimated current worker state and already selected representatives. Expand only
+the entities needed at the cheapest useful representation.
 
-Structural use of recalled material may record inferred positive feedback after
-a successful semantic commit. Negative feedback must be explicit and contextual:
+The worker-state estimate has independent content coverage, salience,
+structural coverage, and recency dimensions. It estimates information plausibly
+available to this worker; it does not reproduce a literal model context window.
+A surfaced capsule adds weak content coverage and recent salience. Expansion
+adds strong content coverage. Later reference adds high salience. Structural use
+adds structural coverage without implying full content coverage. Query it with:
+
+~~~bash
+long-run-agent --root <run-directory> query worker-state --id <entity-id>
+~~~
+
+Treat current coverage as the initial selected set for representative recall.
+This suppresses an immediately repeated, unchanged capsule through ordinary
+redundancy scoring. Material epistemic changes override inhibition. Do not add a
+separate next-call blacklist.
+
+Retrieval outcomes are separate telemetry. Infer expansion, later reference,
+structural use, and accepted relation suggestions as positive outcomes after the
+behavior occurs. Lack of use is neutral. Negative feedback must be explicit and
+contextual:
 
 ~~~bash
 long-run-agent --root <run-directory> feedback <event-id> --entity-id <id> --action dismissed
@@ -200,7 +220,36 @@ long-run-agent --root <run-directory> feedback <suggestion-id> --action rejected
 ~~~
 
 Accepting a relation suggestion creates a normal semantic transaction.
-Rejection or dismissal changes retrieval behavior only.
+Dismissal before expansion is weak; dismissal after expansion is strong. Neither
+globally demotes the entity. Rejection or dismissal changes retrieval behavior
+only for its retrieval context.
+
+Noncurrent state is not constructive recall. A superseded, withdrawn, defeated,
+invalidated, or out-of-scope entity may be corrective when the active reasoning
+basis resembles the historical basis that failed. Its capsule must make the
+historical badge, present relevance, noncurrent reason, decisive correction
+path, and known successor inseparable from the old content. Never present
+obsolete content bare as a current belief.
+
+Diagnostics and fix-its are advisory compiler output:
+
+- Level 0 is a derived diagnostic only.
+- Level 1 is a safe structural code action.
+- Level 2 prepares a semantic repair that still requires worker judgment.
+
+Code actions carry preconditions, expected consequences, semantic-input
+requirements, and a proposed EpistemicDelta when one is available. Preview and
+accept them through the ordinary EpistemicDelta compiler; never create a second
+quick-fix mutation path.
+
+Mechanical relations such as premise_of, produced_by, same_content, references,
+and generated_by need no rationale by default. Semantic relations may carry
+structured basis references and a concise rationale. Revise misleading relation
+rationale through append-only annotation operations so normal presentation uses
+the latest wording while audit history preserves the original. Offer annotation
+revision only when the entity or relation is already expanded, referenced,
+structurally active, diagnostic-relevant, or on a corrective path. Never scan
+cold history just to improve labels.
 
 ## Checkpoint And Resume
 

@@ -8,6 +8,7 @@ from typing import Any
 from .errors import SemanticError
 from .recall import entity_catalog, operation_entity_ids
 from .util import canonical_json, random_id, stable_id
+from .worker_state import material_state, noncurrent_context
 
 
 def _event(kind: str, **data: Any) -> dict[str, Any]:
@@ -24,11 +25,22 @@ class ContextQueryMixin:
 
     store: Any
 
+    @staticmethod
+    def _coverage_summary(state: dict[str, Any], entity_id: str) -> dict[str, Any]:
+        coverage = state.get("worker_state", {}).get(entity_id, {})
+        return {
+            key: coverage.get(key, {}).get("estimate", 0.0)
+            for key in ("content_coverage", "salience", "structural_coverage")
+        } | {"recency": coverage.get("recency", {})}
+
     def _context_entries(self, state: dict[str, Any], since_generation: int) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
         catalog = entity_catalog(state)
         changed = [item for item in catalog.values() if item.get("generation", 0) > since_generation]
         for entity in sorted(changed, key=lambda item: (-item.get("generation", 0), item["id"])):
+            correction = noncurrent_context(entity["id"], entity, state)
+            if correction["noncurrent"]:
+                continue
             entries.append(
                 {
                     "section": "current_work",
@@ -42,9 +54,14 @@ class ContextQueryMixin:
             )
         for claim_id, claim in sorted(state.get("claims", {}).items()):
             derived = claim.get("derived", {})
+            claim_entity = {**claim, "entity_type": "claim", "id": claim_id}
             if (
-                derived.get("support_state") in {"supported", "contested"}
-                or derived.get("applicability_state") == "revalidation_required"
+                not noncurrent_context(claim_id, claim_entity, state)["noncurrent"]
+                and (
+                    derived.get("support_state") in {"supported", "contested"}
+                    or derived.get("applicability_state")
+                    == "revalidation_required"
+                )
             ):
                 entries.append(
                     {
@@ -76,23 +93,106 @@ class ContextQueryMixin:
                 )
         for diagnostic in state.get("diagnostics", []):
             if diagnostic.get("severity") in {"error", "warning"}:
-                entries.append({"section": "diagnostics", **diagnostic})
+                entries.append(
+                    {
+                        "section": "diagnostics",
+                        "id": diagnostic.get("id"),
+                        "code": diagnostic.get("code"),
+                        "severity": diagnostic.get("severity"),
+                        "why": diagnostic.get("why"),
+                        "what_changed": diagnostic.get("what_changed"),
+                        "affected_entities": diagnostic.get(
+                            "affected_entities", []
+                        ),
+                        "relevant_paths": diagnostic.get("relevant_paths", []),
+                        "code_actions": [
+                            {
+                                "id": action.get("id"),
+                                "level": action.get("level"),
+                                "title": action.get("title"),
+                                "semantic_input_required": action.get(
+                                    "semantic_input_required"
+                                ),
+                            }
+                            for action in diagnostic.get("fixits", [])
+                        ],
+                    }
+                )
         for event in reversed(state.get("retrieval_events", [])):
             if event.get("event") != "retrieval.surfaced":
                 continue
+            surfaced_capsules = {
+                item.get("entity_id"): item
+                for item in event.get("capsules", [])
+                if item.get("entity_id")
+            }
             for entity_id in event.get("entity_ids", []):
                 entity = catalog.get(entity_id)
                 if entity:
-                    entries.append(
-                        {
-                            "section": "historical_recall",
-                            "entity_id": entity_id,
-                            "entity_type": entity["entity_type"],
-                            "name": entity.get("name") or entity.get("proposition") or entity_id,
-                            "reference": {"action": "expand", "entity_id": entity_id},
-                        }
-                    )
+                    capsule = surfaced_capsules.get(entity_id)
+                    if capsule:
+                        entries.append(
+                            {
+                                "section": "historical_recall",
+                                **{
+                                    key: capsule.get(key)
+                                    for key in (
+                                        "entity_id",
+                                        "entity_type",
+                                        "role",
+                                        "historical_noncurrent",
+                                        "name",
+                                        "description",
+                                        "current_state",
+                                        "why_relevant_now",
+                                        "why_no_longer_current",
+                                        "decisive_path",
+                                        "current_successor",
+                                        "reference",
+                                    )
+                                    if key in capsule
+                                },
+                            }
+                        )
+                        continue
+                    correction = noncurrent_context(entity_id, entity, state)
+                    entry = {
+                        "section": "historical_recall",
+                        "entity_id": entity_id,
+                        "entity_type": entity["entity_type"],
+                        "name": entity.get("name")
+                        or entity.get("proposition")
+                        or entity_id,
+                        "reference": {"action": "expand", "entity_id": entity_id},
+                    }
+                    if correction["noncurrent"]:
+                        entry["name"] = (
+                            f"Historical correction - {entry['name']} "
+                            f"[{correction['badge']}]"
+                        )
+                        entry.update(
+                            {
+                                "role": "corrective",
+                                "historical_noncurrent": True,
+                                "current_state": correction["badge"],
+                                "why_no_longer_current": correction[
+                                    "why_no_longer_current"
+                                ],
+                                "decisive_path": correction["decisive_path"],
+                                "current_successor": correction[
+                                    "current_successor"
+                                ],
+                            }
+                        )
+                    entries.append(entry)
             break
+        for entry in entries:
+            entity_id = entry.get("entity_id")
+            if entity_id:
+                entry.setdefault(
+                    "worker_state_coverage",
+                    self._coverage_summary(state, entity_id),
+                )
         return entries
 
     def context(
@@ -139,6 +239,9 @@ class ContextQueryMixin:
             if not complete
             else "",
         }
+        selected_ids = [
+            entry["entity_id"] for entry in selected if entry.get("entity_id")
+        ]
         telemetry = _event(
             "retrieval.context_generated",
             id=random_id("context"),
@@ -150,9 +253,14 @@ class ContextQueryMixin:
                     "offset": offset,
                 },
             ),
-            entity_ids=[
-                entry["entity_id"] for entry in selected if entry.get("entity_id")
-            ],
+            entity_ids=selected_ids,
+            entity_states={
+                entity_id: material_state(
+                    entity_id, entity_catalog(state)[entity_id], state
+                )
+                for entity_id in selected_ids
+                if entity_id in entity_catalog(state)
+            },
             used_chars=used,
             max_chars=char_limit,
             entry_count=len(selected),
@@ -162,6 +270,11 @@ class ContextQueryMixin:
         )
         transaction = self._record_telemetry([telemetry])
         response["telemetry_transaction_id"] = transaction["transaction_id"]
+        current_state = self.state()
+        response["worker_state_after_context"] = {
+            entity_id: current_state.get("worker_state", {}).get(entity_id, {})
+            for entity_id in selected_ids
+        }
         return response
 
     def expand(
@@ -171,6 +284,7 @@ class ContextQueryMixin:
         catalog = entity_catalog(state)
         if entity_id not in catalog:
             raise SemanticError(f"unknown entity: {entity_id}")
+        correction = noncurrent_context(entity_id, catalog[entity_id], state)
         depth = max_depth or self.store.load_policy()["context"]["max_proof_depth"]
         frontier, seen, related = [entity_id], {entity_id}, []
         for _ in range(depth):
@@ -185,14 +299,25 @@ class ContextQueryMixin:
             frontier = next_frontier
             if not frontier:
                 break
+        latest_surface = next(
+            (
+                event
+                for event in reversed(state.get("retrieval_events", []))
+                if event.get("event") == "retrieval.surfaced"
+                and entity_id in event.get("entity_ids", [])
+            ),
+            {},
+        )
         telemetry = _event(
             "retrieval.expanded",
             id=random_id("retrieval_expand"),
             context_key=f"expand:{entity_id}",
             entity_ids=[entity_id],
             representation=representation,
+            source_event_id=latest_surface.get("id", ""),
         )
         telemetry_transaction = self._record_telemetry([telemetry])
+        coverage = self.state().get("worker_state", {}).get(entity_id, {})
         return {
             "entity": catalog[entity_id],
             "representation": representation,
@@ -201,6 +326,20 @@ class ContextQueryMixin:
             "max_depth": depth,
             "complete": not frontier,
             "warning": "proof expansion depth bound reached" if frontier else "",
+            "worker_state_coverage": coverage,
+            "presentation_guard": (
+                {
+                    "historical_noncurrent": True,
+                    "current_state": correction["badge"],
+                    "why_no_longer_current": correction[
+                        "why_no_longer_current"
+                    ],
+                    "decisive_path": correction["decisive_path"],
+                    "current_successor": correction["current_successor"],
+                }
+                if correction["noncurrent"]
+                else {"historical_noncurrent": False}
+            ),
             "telemetry_transaction_id": telemetry_transaction["transaction_id"],
         }
 
@@ -213,12 +352,29 @@ class ContextQueryMixin:
             )
             if not source_event:
                 raise SemanticError(f"unknown retrieval event: {event_id}")
+            if source_event.get("event") != "retrieval.surfaced":
+                raise SemanticError("dismissal requires a surfaced retrieval event")
+            if entity_id not in source_event.get("entity_ids", []):
+                raise SemanticError(
+                    f"entity {entity_id} was not surfaced by retrieval event {event_id}"
+                )
+            source_sequence = int(source_event.get("telemetry_sequence", 0))
+            inspected = any(
+                event.get("event") == "retrieval.expanded"
+                and entity_id in event.get("entity_ids", [])
+                and int(event.get("telemetry_sequence", 0)) > source_sequence
+                for event in state.get("retrieval_events", [])
+            )
+            strength = "strong" if inspected else "weak"
             event = _event(
                 "retrieval.dismissed",
                 id=random_id("retrieval_dismissal"),
                 source_event_id=event_id,
                 context_key=source_event.get("context_key", ""),
                 entity_ids=[entity_id],
+                feedback_strength=strength,
+                inspected_before_dismissal=inspected,
+                contextual_weight=1.0 if inspected else 0.4,
             )
             transaction = self._record_telemetry([event])
             return {
@@ -226,12 +382,21 @@ class ContextQueryMixin:
                 "committed_semantics": [],
                 "telemetry": {"transaction_id": transaction["transaction_id"], "events": [event]},
                 "scope": "retrieval_context_only",
+                "feedback_strength": strength,
+                "globally_demoted": False,
             }
         suggestion = state.get("suggestions", {}).get(event_id)
         if not suggestion or action not in {"accepted", "rejected"}:
             raise SemanticError("feedback action must be dismissed, accepted, or rejected")
+        involved_ids = {
+            suggestion.get("source", {}).get("id", ""),
+            suggestion.get("target", {}).get("id", ""),
+            entity_id,
+        } - {""}
         event = _event(
-            f"suggestion.{action}", id=event_id, entity_ids=[entity_id] if entity_id else []
+            f"suggestion.{action}",
+            id=event_id,
+            entity_ids=sorted(involved_ids),
         )
         if action == "accepted":
             result = self.apply(
@@ -243,6 +408,8 @@ class ContextQueryMixin:
                             source=suggestion["source"],
                             target=suggestion["target"],
                             relation=suggestion["relation"],
+                            basis=suggestion.get("basis", []),
+                            rationale=suggestion.get("rationale", ""),
                             source_suggestion_id=event_id,
                         )
                     ]
@@ -293,7 +460,19 @@ class ContextQueryMixin:
             claim = state.get("claims", {}).get(entity_id)
             if not claim:
                 raise SemanticError(f"unknown claim: {entity_id}")
-            result: Any = claim.get("derived", {})
+            correction = noncurrent_context(
+                entity_id,
+                {**claim, "entity_type": "claim", "id": entity_id},
+                state,
+            )
+            result: Any = {
+                **claim.get("derived", {}),
+                "historical_noncurrent": correction["noncurrent"],
+                "presentation_status": correction["badge"] or "CURRENT",
+                "why_no_longer_current": correction["why_no_longer_current"],
+                "decisive_path": correction["decisive_path"],
+                "current_successor": correction["current_successor"],
+            }
         elif kind == "why":
             claim = state.get("claims", {}).get(entity_id, {})
             result = [
@@ -365,13 +544,19 @@ class ContextQueryMixin:
                 if claim.get("derived", {}).get("applicability_state") == "revalidation_required"
             ]
         elif kind == "search":
-            result = self._search(catalog, text)
+            result = self._search(catalog, text, state)
         elif kind == "telemetry":
             result = self._telemetry_metrics(state)
+        elif kind == "worker-state":
+            result = [
+                {"entity_id": item_id, **coverage}
+                for item_id, coverage in sorted(state.get("worker_state", {}).items())
+                if not entity_id or item_id == entity_id
+            ]
         else:
             raise SemanticError(
                 "query kind must be belief, why, why-not, defeaters, assumptions, impact, "
-                "unknowns, history, changes-since, revalidate, search, or telemetry"
+                "unknowns, history, changes-since, revalidate, search, telemetry, or worker-state"
             )
         if not isinstance(result, list):
             return {"kind": kind, "generation": state["generation"], "result": result, "complete": True}
@@ -391,12 +576,17 @@ class ContextQueryMixin:
             "warning": "result is incomplete; continue with the cursor" if not complete else "",
         }
         if kind == "search" and result:
+            page_ids = [item["entity_id"] for item in page]
             event = _event(
                 "retrieval.surfaced",
                 id=random_id("search"),
                 mode="search",
                 context_key=stable_id("search_ctx", text),
-                entity_ids=[item["entity_id"] for item in page],
+                entity_ids=page_ids,
+                entity_states={
+                    item_id: material_state(item_id, catalog[item_id], state)
+                    for item_id in page_ids
+                },
                 candidates=result,
                 policy_version=self.store.load_policy()["schema_version"],
             )
@@ -459,8 +649,19 @@ class ContextQueryMixin:
                 "automatic_candidates": automatic_candidates,
                 "automatic_capsules_surfaced": automatic_surfaced,
                 "expanded": counts["retrieval.expanded"],
+                "referenced": counts["retrieval.referenced"],
                 "used_structurally": counts["retrieval.structurally_used"],
                 "dismissed": counts["retrieval.dismissed"],
+                "dismissed_weak": sum(
+                    item.get("feedback_strength") == "weak"
+                    for item in events
+                    if item.get("event") == "retrieval.dismissed"
+                ),
+                "dismissed_strong": sum(
+                    item.get("feedback_strength") == "strong"
+                    for item in events
+                    if item.get("event") == "retrieval.dismissed"
+                ),
                 "relation_suggestions_accepted": counts["suggestion.accepted"],
                 "relation_suggestions_rejected": counts["suggestion.rejected"],
                 "correlated_family_compression_ratio": (
@@ -514,7 +715,11 @@ class ContextQueryMixin:
         return paths
 
     @staticmethod
-    def _search(catalog: dict[str, dict[str, Any]], text: str) -> list[dict[str, Any]]:
+    def _search(
+        catalog: dict[str, dict[str, Any]],
+        text: str,
+        state: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         terms = [term.lower() for term in text.split() if term]
         results = []
         for entity_id, entity in catalog.items():
@@ -524,12 +729,15 @@ class ContextQueryMixin:
             ).lower()
             score = sum(haystack.count(term) for term in terms)
             if score:
+                correction = noncurrent_context(entity_id, entity, state)
                 results.append(
                     {
                         "entity_id": entity_id,
                         "entity_type": entity["entity_type"],
                         "score": score,
                         "features": {"term_frequency": score},
+                        "historical_noncurrent": correction["noncurrent"],
+                        "presentation_status": correction["badge"] or "CURRENT",
                     }
                 )
         return sorted(results, key=lambda item: (-item["score"], item["entity_id"]))

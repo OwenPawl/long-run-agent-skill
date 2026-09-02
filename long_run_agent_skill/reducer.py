@@ -6,14 +6,18 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Any
 
+from .code_actions import normalize_diagnostics
 from .graph import strongly_connected_components, support_independence
 from .util import stable_id
+from .worker_state import derive_worker_state, operation_references
 
 
 def _payload(operation: dict[str, Any]) -> dict[str, Any]:
     data = deepcopy(operation.get("data", {}))
     data["generation"] = operation.get("_generation", 0)
     data["transaction_id"] = operation.get("_transaction_id", "")
+    if "_telemetry_sequence" in operation:
+        data["telemetry_sequence"] = operation["_telemetry_sequence"]
     return data
 
 
@@ -128,6 +132,15 @@ def _collect(operations: list[dict[str, Any]]) -> dict[str, Any]:
             entry.update(data)
             action = kind.removeprefix("suggestion.")
             entry["status"] = "suggested" if action == "created" else action
+            if action == "accepted":
+                for entity_id in data.get("entity_ids", []):
+                    attention = model["attention"].setdefault(entity_id, {})
+                    attention["last_relation_suggestion_accepted_generation"] = data[
+                        "generation"
+                    ]
+                    attention["relation_suggestion_accepted_count"] = (
+                        attention.get("relation_suggestion_accepted_count", 0) + 1
+                    )
         elif kind in {"annotation.created", "annotation.revised"}:
             key = f"{data.get('entity_type')}:{data.get('entity_id')}"
             model["annotations"][key] = data
@@ -139,10 +152,21 @@ def _collect(operations: list[dict[str, Any]]) -> dict[str, Any]:
                 signal = kind.removeprefix("retrieval.")
                 attention[f"last_{signal}_generation"] = data["generation"]
                 attention[f"{signal}_count"] = attention.get(f"{signal}_count", 0) + 1
+                if signal == "surfaced":
+                    material = data.get("entity_states", {}).get(entity_id)
+                    if material is not None:
+                        attention["last_surfaced_material_state"] = material
+                    attention["last_surfaced_telemetry_sequence"] = data.get(
+                        "telemetry_sequence"
+                    )
                 if signal == "expanded":
                     attention["last_read_or_expanded_generation"] = data["generation"]
                 if signal == "structurally_used":
                     attention["last_structural_use_generation"] = data["generation"]
+                if signal == "dismissed":
+                    strength = data.get("feedback_strength", "weak")
+                    key = f"dismissed_{strength}_count"
+                    attention[key] = attention.get(key, 0) + 1
         elif kind == "checkpoint.created":
             _latest_update(model["checkpoints"], data)
         if not kind.startswith(("retrieval.", "suggestion.")):
@@ -151,27 +175,16 @@ def _collect(operations: list[dict[str, Any]]) -> dict[str, Any]:
                 model["attention"].setdefault(own_id, {}).setdefault(
                     "created_generation", data["generation"]
                 )
-            references = list(data.get("premises", [])) + list(data.get("grounds", []))
-            for key in ("source", "target", "artifact_ref"):
-                if isinstance(data.get(key), dict):
-                    references.append(data[key])
-            conclusion = data.get("conclusion", {})
-            conclusion_id = conclusion.get("id") or conclusion.get("claim_id")
-            if conclusion_id:
-                references.append({"id": conclusion_id})
-            references.extend({"id": item} for item in data.get("basis_claim_ids", []))
-            references.extend({"id": item} for item in data.get("evidence_ids", []))
-            references.extend(
-                {"id": item.get("assumption_id", "")} for item in data.get("assumptions", [])
-            )
-            references.extend(
-                {"id": item.get("dependency_id", "")} for item in data.get("dependencies", [])
-            )
-            for reference in references:
-                entity_id = reference.get("id", "")
+            referenced, structural = operation_references([operation])
+            for entity_id in referenced:
                 if entity_id and entity_id != own_id:
                     model["attention"].setdefault(entity_id, {})[
                         "last_referenced_generation"
+                    ] = data["generation"]
+            for entity_id in structural:
+                if entity_id and entity_id != own_id:
+                    model["attention"].setdefault(entity_id, {})[
+                        "last_structurally_used_generation"
                     ] = data["generation"]
     annotation_types = {
         "artifacts": "artifact",
@@ -183,12 +196,26 @@ def _collect(operations: list[dict[str, Any]]) -> dict[str, Any]:
         "dependencies": "dependency",
         "questions": "question",
         "decisions": "decision",
+        "warrants": "warrant",
+        "relations": "relation",
     }
     for collection, entity_type in annotation_types.items():
         for entity_id, entity in model[collection].items():
             annotation = model["annotations"].get(f"{entity_type}:{entity_id}")
             if annotation:
-                entity.update({key: annotation[key] for key in ("name", "description", "aliases", "tags") if key in annotation})
+                entity.update(
+                    {
+                        key: annotation[key]
+                        for key in (
+                            "name",
+                            "description",
+                            "aliases",
+                            "tags",
+                            "rationale",
+                        )
+                        if key in annotation
+                    }
+                )
     return model
 
 
@@ -696,7 +723,7 @@ def reduce_operations(operations: list[dict[str, Any]], policy: dict[str, Any]) 
                     why="historical support exists but no current supporting argument is active",
                     new_state="revalidation_required",
                     relation_paths=[item["argument_id"] for item in repair_paths],
-                    fixits=[{"level": 1, "action": "execute a candidate revalidation path", "paths": repair_paths}],
+                    fixits=[{"level": 2, "action": "execute a candidate revalidation path", "paths": repair_paths}],
                 )
             )
 
@@ -826,7 +853,7 @@ def reduce_operations(operations: list[dict[str, Any]], policy: dict[str, Any]) 
         edges.append({"source": relation.get("source", {}).get("id", ""), "relation": relation.get("relation", "related"), "target": relation.get("target", {}).get("id", "")})
 
     generation = max((operation.get("_generation", 0) for operation in operations), default=0)
-    return {
+    result = {
         "schema_version": "epistemic-state.v1",
         "generation": generation,
         "mission": model["mission"],
@@ -847,7 +874,12 @@ def reduce_operations(operations: list[dict[str, Any]], policy: dict[str, Any]) 
         "attention": model["attention"],
         "retrieval_events": model["retrieval_events"],
         "checkpoints": model["checkpoints"],
-        "diagnostics": sorted(diagnostics, key=lambda item: (item["code"], item["id"])),
+        "diagnostics": normalize_diagnostics(
+            sorted(diagnostics, key=lambda item: (item["code"], item["id"])),
+            generation,
+        ),
         "edges": sorted(edges, key=lambda item: (item["source"], item["relation"], item["target"])),
         "circular_entity_ids": sorted(circular_entities),
     }
+    result["worker_state"] = derive_worker_state(result, policy)
+    return result

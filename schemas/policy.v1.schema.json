@@ -9,6 +9,7 @@
     "fixits",
     "revalidation_costs",
     "retrieval",
+    "worker_state",
     "context"
   ],
   "properties": {
@@ -18,6 +19,7 @@
     "fixits": { "type": "object" },
     "revalidation_costs": { "type": "object" },
     "retrieval": { "type": "object" },
+    "worker_state": { "type": "object" },
     "context": { "type": "object" }
   },
   "additionalProperties": true
