@@ -1,3 +1,6 @@
-"""Package integration surface for the long-run-agent mission harness."""
+"""Standalone epistemic compiler for long-running agent work."""
 
-__version__ = "0.2.0"
+from .compiler import EpistemicCompiler
+
+__all__ = ["EpistemicCompiler"]
+__version__ = "1.0.0"

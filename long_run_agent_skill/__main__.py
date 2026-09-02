@@ -1,6 +1,6 @@
-"""Run the standalone long-run-agent MCP server."""
+"""Run the standalone long-run-agent command-line interface."""
 
-from .mcp_server import main
+from .cli import main
 
 if __name__ == "__main__":
     main()
