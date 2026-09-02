@@ -106,10 +106,25 @@ class RetrievalAndContextTests(MissionCase):
         )
         query = self.compiler.query("history", "c0", limit=1)
         self.assertFalse(query["complete"] if len(self.compiler.query("history", "c0")["result"]) > 1 else True)
+        unknowns = self.compiler.query("unknowns", limit=1)
+        self.assertFalse(unknowns["complete"])
+        self.assertTrue(unknowns["continuation"])
+        continued = self.compiler.query(
+            "unknowns", limit=1, cursor=unknowns["continuation"]
+        )
+        self.assertNotEqual(unknowns["result"], continued["result"])
 
     def test_retrieval_telemetry_survives_derived_state_deletion(self) -> None:
         self.evidence("searchable_evidence", subject="uncommon-keyword")
         self.compiler.query("search", text="uncommon-keyword")
+        self.compiler.context(max_entities=1, max_chars=1000)
+        metrics = self.compiler.query("telemetry")["result"]
+        self.assertEqual(metrics["agent_maintenance"]["manual_searches"], 1)
+        self.assertEqual(metrics["context_efficiency"]["context_packs"], 1)
+        self.assertEqual(metrics["context_efficiency"]["raw_evidence_avoided"], 1)
+        self.assertFalse(
+            metrics["agent_maintenance"]["state_administration_tokens"]["available"]
+        )
         telemetry_path = self.root / ".agent" / "retrieval.jsonl"
         before = telemetry_path.read_text(encoding="utf-8")
         Path(self.root, ".agent", "state.sqlite").unlink()
@@ -118,6 +133,8 @@ class RetrievalAndContextTests(MissionCase):
         self.assertEqual(before, after)
         self.assertEqual(rebuilt["model_calls"], 0)
         self.assertTrue(self.compiler.state()["retrieval_events"])
+        rebuilt_metrics = self.compiler.query("telemetry")["result"]
+        self.assertEqual(rebuilt_metrics["agent_maintenance"]["manual_searches"], 1)
 
     def test_annotations_are_revisable_without_overwriting_semantic_history(self) -> None:
         self.evidence("annotated")

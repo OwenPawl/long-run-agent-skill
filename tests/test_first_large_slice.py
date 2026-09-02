@@ -167,4 +167,7 @@ class FirstLargeSliceScenarioTests(MissionCase):
             resumed["context"]["budget"]["used_chars"],
             resumed["context"]["budget"]["max_chars"],
         )
+        metrics = fresh.query("telemetry")["result"]
+        self.assertGreaterEqual(metrics["resume"]["resume_events"], 1)
+        self.assertGreaterEqual(metrics["resume"]["zero_model_call_resumes"], 1)
         self.assertEqual(fresh.validate()["status"], "success")

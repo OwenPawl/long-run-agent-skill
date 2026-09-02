@@ -102,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
             "changes-since",
             "revalidate",
             "search",
+            "telemetry",
         ],
     )
     query.add_argument("--id", default="")

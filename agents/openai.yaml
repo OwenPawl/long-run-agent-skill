@@ -1,7 +1,7 @@
 interface:
   display_name: "Long Run Agent"
-  short_description: "Run long tasks through a steerable worker and optional mission harness"
-  default_prompt: "Use $long-run-agent to run this long task through a steerable .agent/live.md control plane, and use its mission_* MCP tools when a local MCP client is available."
+  short_description: "Steer one durable worker with an epistemic compiler"
+  default_prompt: "Use $long-run-agent to run this task through one worker, the .agent/live.md control plane, and the standalone epistemic compiler. Preserve committed semantics, derived consequences, diagnostics, suggestions, and recall as distinct results."
 
 commands:
   mcp_server: "long-run-agent-mcp"

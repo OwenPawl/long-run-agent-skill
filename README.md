@@ -1,225 +1,183 @@
-# Long Run Agent Skill
+# Long Run Agent
 
-This repository contains a small skill and local stdio MCP server for
-long-running work. The mission harness provides a steerable `.agent/live.md`
-control plane, watcher scripts, and a minimal, domain-neutral audit layer for
-preserving run state over time.
+Long Run Agent is a local, standalone epistemic compiler for long-running
+agent work. It preserves what was observed, claimed, assumed, supported,
+attacked, decided, and left unknown, then derives the current working state
+deterministically.
 
-The harness is not an agent OS, planner, or database. It exists to make long
-runs less wrong by keeping durable records of goals, commands, verification,
-append-only claim revisions, typed evidence relationships, artifacts, failures,
-friction, and next actions.
+The compiler does not call a model or network service. Its authoritative
+semantic ledger is append-only; SQLite and human-readable views are disposable
+and can be rebuilt offline.
+
+## Design Boundary
+
+The compiler separates five result classes:
+
+- committed: semantic operations durably appended by the requested write
+- derived: deterministic consequences such as support, applicability, and impact
+- diagnostics: invalid or newly unsafe reasoning plus concrete repair paths
+- suggested: non-authoritative relation candidates requiring explicit acceptance
+- recall: bounded historical context selected for the current operation
+
+Evidence and provenance are not arguments. Claims gain support through explicit
+arguments with conjunctive premises, warrants, assumptions, and dependency
+conditions. Alternative arguments provide independent support when their root
+evidence and correlation families are independent. Grounded rebut, undercut,
+and undermine attacks can defeat conclusions, warrants, and premises. Pure
+support cycles never bootstrap themselves into warranted belief.
+
+## Durable State
+
+Initialization creates this state beneath the selected mission root:
+
+~~~text
+.agent/
+  live.md
+  ledger.jsonl
+  retrieval.jsonl
+  policy.json
+  current.md
+  state.sqlite
+  checkpoint.json
+~~~
+
+ledger.jsonl is the hash-chained semantic authority. retrieval.jsonl is a
+separate hash-chained record of recall, suggestion, and feedback behavior;
+those records never become epistemic truth implicitly. policy.json controls
+bounded context, recall, and derivation. current.md and state.sqlite are
+generated views. checkpoint.json contains only verified pointers into durable
+state. live.md remains the sole user steering and control file.
 
 ## Install
 
-From a fresh checkout, inspect the install plan first:
+Inspect the skill installation plan before replacing an existing installation:
 
-```bash
+~~~bash
 python3 scripts/install_skill.py --json
-```
-
-Install into detected local skill host directories only when the plan looks
-right:
-
-```bash
-python3 scripts/install_skill.py --execute --host auto
 python3 scripts/install_skill.py --execute --host codex
-python3 scripts/install_skill.py --execute --host claude
-python3 scripts/install_skill.py --execute --host both
-```
+~~~
 
-The installer copies this skill directory, excludes cache/build artifacts, and
-backs up an existing target before replacing it. It does not install system
-packages or start a worker.
+The installer backs up an existing target and excludes repository, cache,
+build, and packaging artifacts. It does not install system packages or start a
+worker.
 
-Install the MCP server into a Python environment with:
+Install the Python package and stdio MCP server with:
 
-```bash
-pip install -e .
+~~~bash
+python3 -m pip install .
+long-run-agent --help
 long-run-agent-mcp
-```
+~~~
 
-Example local MCP client configuration:
+## Quick Start
 
-```json
-{
-  "mcpServers": {
-    "long-run-agent": {
-      "command": "/absolute/path/to/venv/bin/long-run-agent-mcp"
-    }
-  }
-}
-```
+All commands emit JSON. The repository-local launcher and installed command use
+the same library:
 
-The server exposes namespaced `mission_*` tools for initialization, control
-reads, run start/close, validation, claim revisions, typed relationships,
-artifacts, friction, summaries, and index search. `mission_control_read` accepts
-the SHA-256 from the previous read
-and omits unchanged content, giving MCP clients a bounded polling equivalent of
-the terminal watcher. The existing watcher and reveal scripts remain available
-for direct skill operation.
+~~~bash
+python3 scripts/mission_harness.py --root /tmp/mission init --goal "verify the release"
+python3 scripts/mission_harness.py --root /tmp/mission start --goal "verify the release"
+python3 scripts/mission_harness.py --root /tmp/mission observe artifact --data '{"id":"artifact:test","locator":"/tmp/result.txt"}'
+python3 scripts/mission_harness.py --root /tmp/mission observe evidence --data '{"id":"evidence:test","artifact_ref":{"id":"artifact:test"},"description":"tests passed","producer":"test runner","source_run":"release"}'
+python3 scripts/mission_harness.py --root /tmp/mission assert --data '{"id":"claim:release","proposition":"release is verified","premises":[{"type":"evidence","id":"evidence:test"}],"warrant":{"statement":"passing tests warrant release verification"},"argument_id":"argument:release"}'
+python3 scripts/mission_harness.py --root /tmp/mission query belief --id claim:release
+python3 scripts/mission_harness.py --root /tmp/mission checkpoint
+python3 scripts/mission_harness.py --root /tmp/mission validate
+~~~
 
-Other local MCP servers can compose the same mission tools by importing
-`long_run_agent_skill.mcp_tools.register_mission_tools`. Durable truth still
-lives only in `.agent/`; composition does not create a second state store.
+Use --preview on semantic helper commands, or the raw preview command, to inspect
+consequences without changing either ledger. Raw apply accepts an
+EpistemicDelta JSON object and an optional generation precondition.
 
-## Mission Harness v0.2
+## Semantic Operations
 
-Use the harness from any project root:
+- observe records artifacts, evidence observations, dependency versions, and
+  verification results without conflating their identities.
+- assert appends a claim revision and may add an explicit supporting argument.
+- assumption records a first-class semantic assumption.
+- argument records a warranted argument with one or more conjunctive premises.
+- attack records a grounded rebut, undercut, or undermine.
+- ask opens a question representing known ignorance.
+- decide records a decision together with its claim, evidence, assumption, and
+  dependency basis.
+- feedback dismisses recalled context or explicitly accepts or rejects a
+  relation suggestion.
+- close records the outcome and next actions without discarding history.
 
-```bash
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project init
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project run start --goal "bounded task"
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project claim add --id <claim-id> --claim "..." --source-path <path> --source-kind <kind> --status tested
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project claim disprove --id <claim-id> --evidence-artifact <artifact-id> --notes "..."
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project claim history --id <claim-id>
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project relation add --source-type artifact --source-id <artifact-id> --relation supports --target-type claim_revision --target-id <revision-id>
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project relation list --endpoint-type claim --endpoint-id <claim-id>
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project friction add --category verification_gap --description "..." --impact "..." --proposed-harness-need "..."
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project friction settle --id <friction-id> --status consolidated --root-cause-id <root-id> --release-disposition deferred --rationale "..."
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project friction report --fail-on-ambiguous-open --output friction-readiness.md
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project run close --outcome "done" --command "..." --test "..." --next-action "..."
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project validate
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project state preflight
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project state compact-live
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project state summarize
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project index rebuild
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project index search "query terms"
-python3 /path/to/long-run-agent/scripts/mission_harness.py --root /path/to/project index status
-python3 /path/to/long-run-agent/scripts/mission_records_recent.py --root /path/to/project claims --limit 5
-python3 /path/to/long-run-agent/scripts/mission_records_recent.py --root /path/to/project relations --limit 5
-python3 /path/to/long-run-agent/scripts/mission_artifact_materialize.py --root /path/to/project --id <artifact-id>
-python3 /path/to/long-run-agent/scripts/mission_artifact_materialize.py --root /path/to/project --path <new-evidence-path>
-python3 /path/to/long-run-agent/scripts/mission_artifact_materialize.py --root /path/to/project --path <input-path> --stage-copy /private/tmp/<stable-input>
-python3 /path/to/long-run-agent/scripts/watch_live_file.py /path/to/project/.agent/live.md --create --interval 1
-python3 /path/to/long-run-agent/scripts/reveal_live_file.py /path/to/project/.agent/live.md --skip-if-open
-```
+Queries cover belief, why, why-not, defeaters, assumptions, impact, unknowns,
+history, changes-since, revalidate, search, and telemetry. context returns bounded
+WorkerScope and ActiveDelta sections with explicit completeness and continuation
+metadata. expand retrieves the cheapest useful representation of one entity.
 
-`init` creates:
+When evidence, assumptions, dependencies, or attacks change, the fixed-point
+reducer recomputes affected conclusions, questions, and decisions. Diagnostics
+name unsupported conclusions, ungrounded cycles, changed decision bases, and
+revalidation work. Historical support remains history; it is not silently
+treated as current support.
 
-```text
-.agent/
-  live.md
-  current_state.md
-  constitution.md
-  known_failures.md
-  decisions.md
-  runs.jsonl
-  claims.json
-  artifacts.json
-  friction.jsonl
-  evidence_relations.jsonl
-```
+## Recall And Feedback
 
-`live.md` is the active control plane. Durable facts should be promoted into the
-structured files during run close or explicit `claim`, `artifact`, and
-`friction` commands. Do not leave important state only in `live.md`.
+Recall is automatic on semantic writes. It ranks compact entity capsules using
+lexical relevance, graph proximity, recency, prior utility, negative feedback,
+and correlation-aware diversity. Exact artifact identity may collapse duplicate
+artifacts; byte similarity alone never merges distinct observations.
 
-## Command Surface
+Structural use of recalled material records inferred positive feedback only
+after a successful semantic commit. Dismissal is contextual and explicit.
+Accepting a suggested relation creates a normal semantic transaction; rejecting
+one only records retrieval feedback.
 
-- `init`: create the `.agent/` files without overwriting existing files unless `--force` is passed.
-- `run start`: append a `run_start` record to `.agent/runs.jsonl` and update `live.md`.
-- `run close`: append a `run_close` record with outcome, commands, tests, changed files, failures, claims, artifacts, evidence relationships, and next actions. Use `--relation <id>` to bind newly recorded edges to the closeout.
-- `friction add`: append a process/tooling friction record to `.agent/friction.jsonl`. If it is another observation of a known pattern, include `--root-cause-id` instead of creating a disconnected open issue.
-- `friction settle`: append release-readiness settlement records for existing friction ids. This preserves the original evidence and makes the latest effective status clear.
-- `friction report`: summarize raw records versus effective friction items, root causes, release dispositions, ambiguous open items, and release-blocking items.
-- `claim add`: append an immutable revision in `.agent/claims.json`. Reusing a claim id advances its revision number and records the superseded revision; it never replaces prior history.
-- `claim disprove`: append a `disproved` revision and associate one or more uniquely identified artifacts through `refutes` relationships targeting the previously current revision. Direct `claim add --status disproved` is rejected so a disproval cannot omit evidence.
-- `claim history`: return all revisions for one stable claim id together with its typed evidence relationships.
-- `relation add`: append a typed edge to `.agent/evidence_relations.jsonl`. Endpoints can reference claims, claim revisions, artifacts, runs, friction, or earlier relationships; both endpoints must exist.
-- `relation list`: list typed evidence edges, optionally filtered by endpoint and relationship type.
-- `artifact add`: append an artifact record to `.agent/artifacts.json`.
-- `mission_artifact_materialize.py --id <artifact-id>` or `--path <new-evidence-path>`: resolve recorded or pre-registration evidence, request its macOS File Provider download if it is `dataless`, and perform a bounded basic-readability check before verification or registration. Add `--stage-copy <new-file>` for a long-running consumer that needs an atomic verified local copy; it supports regular files and will not overwrite an existing destination.
-- `validate`: parse and sanity-check the basic Markdown, JSON, and JSONL state.
-- `state preflight`: on macOS, explicitly request downloads for File Provider `dataless` `.agent` files and perform bounded readability checks for durable state files; on other platforms this is a no-op.
-- `state compact-live`: verify referenced claims/artifacts/friction are durably registered, archive the current live control plane under `.agent/archive/`, then replace verbose evidence sections with a typed archive pointer while retaining active goal and control sections. Run close follows archive chains to recover genuine commands/tests and claim/artifact references.
-- `state summarize`: regenerate `.agent/current_state.md` from recorded state, preferring active `live.md` goal/failures/next actions while a run is open.
-- `index rebuild`: rebuild the derived `.agent/mission_index.sqlite` database from Markdown, JSON, and JSONL state using a fresh replacement database.
-- `index search "query terms"`: search the derived SQLite index. Add `--kind claim`, `--kind friction`, or another record kind to narrow results. If the derived database is unreadable, search rebuilds it once from authoritative state.
-- `index status`: report whether the derived SQLite index exists, how many records it contains, and whether SQLite FTS is available. If status reports `ok: false`, run `index rebuild`.
-- `mission_records_recent.py claims|artifacts|friction|relations|runs --limit N`: list recent authoritative records as JSON without manually guessing each state file's schema.
+## MCP
 
-The harness commands above are implemented in `scripts/mission_harness.py`;
-artifact materialization and SQLite indexing are small companion modules so the
-main CLI remains maintainable. They are covered by smoke tests.
+The stdio server exposes the same compiler through namespaced tools:
 
-Use `scripts/watch_live_file.py` to print `.agent/live.md` at startup and after
-changes. Use `scripts/reveal_live_file.py` once at startup to reveal `live.md`
-in Finder, File Explorer, or the host file manager. These scripts keep the
-automatic opening/watching workflow without adding a second steering document.
-They do not inject a new message into a chat whose parent agent turn has already
-ended. On hosts with subagent waiting or mailbox support, keep the parent turn
-active and forward completion, blocked, and user-input states immediately. On
-other hosts, treat `live.md` as the status source and disclose that automatic
-chat notification is unavailable.
+~~~text
+mission_init              mission_control_read
+mission_start             mission_context
+mission_observe           mission_assert
+mission_assumption        mission_argument
+mission_attack            mission_ask
+mission_decide            mission_query
+mission_expand            mission_feedback
+mission_checkpoint        mission_resume
+mission_close             mission_rebuild
+mission_validate          mission_preview
+mission_apply
+~~~
 
-`run start` clears per-run sections in `live.md` so the next close does not
-inherit stale commands, claims, artifacts, failures, or next actions. JSON state
-mutations use a simple per-file lock and atomic replace to avoid corrupting
-state when multiple harness commands run at the same time. Claims use a stable
-id plus ordered `revision_id`, `revision`, and `supersedes_revision_id` fields.
-Typed evidence edges are append-only and use validated `{type, id}` endpoints,
-making support, refutation, corroboration, contradiction, derivation,
-reproduction, documentation, causation, supersession, and retraction
-independently searchable.
+Other MCP servers can register the same tool set with
+long_run_agent_skill.mcp_tools.register_mission_tools. There is no subprocess
+bridge and no second state store.
 
-On macOS, commands that read or mutate initialized state automatically perform
-the File Provider readiness check first. Use `state preflight` directly when
-you need its diagnostic report. If an unusually long open run makes `live.md`
-hard to review, record durable claims/artifacts/friction first, then use
-`state compact-live`; it refuses to archive unresolved durable references, and
-its archived snapshot preserves removed operational text. Compact writes use a
-compare-and-swap check so a detected concurrent `live.md` edit is not replaced.
+## Long-Run Operation
 
-Friction tracking is evidence-preserving, not issue-count inflation. Keep
-`.agent/friction.jsonl` append-only, but treat the latest record for each
-friction id as the effective disposition. Use `friction settle` when evidence is
-fixed, consolidated under a broader root cause, deferred with a release-safe
-rationale, blocked by external infrastructure, or out of public scope. Use
-`friction report --fail-on-ambiguous-open` before release or handoff so the open
-set means unresolved root causes, not repeated observations. Apply the same
-discipline to closeout summaries: failures, artifacts, and claims should point
-to root causes or release-relevant questions when repeated evidence exists.
+Use one worker for substantive work and keep .agent/live.md as the shared
+mailbox. Start scripts/watch_live_file.py and retain it for the worker session;
+reveal the file once with scripts/reveal_live_file.py. Check the file after each
+meaningful batch, before hard-to-unwind changes, and whenever waiting for input.
+
+At startup or resume, load bounded context from the compiler instead of replaying
+the full ledger. Checkpoint before interruption. On apparent completion, record
+the release evidence, notify the parent when the host supports it, then become
+dormant unless the user explicitly says FINALIZE AND STOP.
 
 ## Verification
 
-Run:
-
-```bash
+~~~bash
+python3 -m unittest discover -s tests -v
+python3 -m py_compile long_run_agent_skill/*.py scripts/*.py
 python3 scripts/install_skill.py --json
-python3 -m unittest discover -s tests
-python3 -m compileall long_run_agent_skill scripts tests
-python3 -m long_run_agent_skill
-python3 scripts/mission_harness.py --root /tmp/example-agent init
-python3 scripts/mission_harness.py --root /tmp/example-agent state preflight
-python3 scripts/mission_harness.py --root /tmp/example-agent friction report --fail-on-ambiguous-open
-python3 scripts/watch_live_file.py /tmp/example-agent/.agent/live.md --create --once
-python3 scripts/reveal_live_file.py /tmp/example-agent/.agent/live.md --help
-python3 scripts/mission_harness.py --root /tmp/example-agent state compact-live
-python3 scripts/mission_harness.py --root /tmp/example-agent index rebuild
-python3 scripts/mission_harness.py --root /tmp/example-agent index search current_state
-python3 scripts/mission_harness.py --root /tmp/example-agent index status
-python3 scripts/mission_records_recent.py --root /tmp/example-agent claims --limit 5
-python3 scripts/mission_records_recent.py --root /tmp/example-agent relations --limit 5
-python3 scripts/mission_harness.py --root /tmp/example-agent validate
-python3 scripts/mission_artifact_materialize.py --root /tmp/example-agent --path .agent/current_state.md
-python3 scripts/mission_artifact_materialize.py --root /tmp/example-agent --path .agent/current_state.md --stage-copy /tmp/example-agent/staged-state.md
-```
+python3 scripts/mission_harness.py --root /tmp/long-run-agent-smoke init --goal smoke
+python3 scripts/mission_harness.py --root /tmp/long-run-agent-smoke validate
+~~~
 
-## Current Limits
-
-- The harness cannot wake a finished parent-agent turn or inject a new chat message by itself. User-facing completion and blocked notifications require host wait/mailbox support or an external notification bridge.
-- SQLite is a derived search index only. Markdown and JSON/JSONL remain the authoritative state.
-- `validate` performs built-in sanity checks; it does not require the external `jsonschema` package.
-- Existing `claims.v1` missions remain readable and are losslessly promoted to ordered `claims.v2` revisions on their next claim write. Original claim fields are retained and marked as a legacy revision.
-- Artifact ids used as relationship endpoints must be unique. Older missions may retain duplicate artifact ids, but the harness rejects an ambiguous relationship until the evidence is registered under a unique id.
-- The harness is domain-neutral. Tool-specific or project-specific evidence belongs in the project using the harness.
-- `current_state.md` is generated from recorded state plus the active live control sections for an open run, and should not be the only copy of important claims or artifacts.
-- File Provider hydration is attempted automatically for initialized state operations on macOS; readiness reads time out rather than leaving the command stalled if content is not available promptly.
-- `mission_artifact_materialize.py` verifies the selected file or directory entry itself; for a recorded directory artifact, select a nested evidence file explicitly before verifying that file's contents.
-- `--stage-copy` stabilizes a selected regular-file input for a long-running consumer; it does not synchronize verifier output back to durable storage or interpret what the copied file proves.
-- `state compact-live` archives operational text but does not independently promote claims, artifacts, or friction. It fails before archiving when live references cannot be matched to durable records.
+The test suite includes the required 20-step epistemic scenario, offline
+deterministic rebuild, fixed-point grounding, cycle rejection, independent
+support, all three attack types, dependency invalidation, diagnostics,
+questions, decisions, bounded recall/context, telemetry, checkpoint/resume,
+CLI/MCP parity, package installation, installer behavior, and the
+under-1000-line source limit.
 
 ## License
 
-This project is licensed under Apache-2.0. See `LICENSE`.
+Apache-2.0. See LICENSE.

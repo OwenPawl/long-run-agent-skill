@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from .context import ContextQueryMixin
@@ -707,6 +708,7 @@ class EpistemicCompiler(ContextQueryMixin):
         }
 
     def resume(self) -> dict[str, Any]:
+        started = perf_counter()
         checkpoint = self._read_checkpoint()
         transactions = self.store.read_transactions(verify=True)
         checkpoint_generation = checkpoint["ledger_generation"]
@@ -717,6 +719,19 @@ class EpistemicCompiler(ContextQueryMixin):
             raise LedgerError("checkpoint ledger hash does not match authoritative history")
         rebuild = self.rebuild()
         context = self.context(since_generation=checkpoint_generation)
+        telemetry = operation(
+            "retrieval.resume_completed",
+            id=random_id("resume"),
+            context_key=f"resume:{checkpoint['id']}",
+            entity_ids=checkpoint.get("worker_scope_entity_ids", []),
+            checkpoint_id=checkpoint["id"],
+            model_calls=0,
+            manual_history_reads=0,
+            context_entry_count=len(context["entries"]),
+            context_used_chars=context["budget"]["used_chars"],
+            elapsed_ms=round((perf_counter() - started) * 1000, 3),
+        )
+        transaction = self._record_telemetry([telemetry])
         return {
             "status": "success",
             "model_calls": 0,
@@ -724,6 +739,7 @@ class EpistemicCompiler(ContextQueryMixin):
             "rebuild": rebuild,
             "changes_since_checkpoint": self.changes_since(checkpoint_generation),
             "context": context,
+            "telemetry_transaction_id": transaction["transaction_id"],
         }
 
     def close(self, outcome: str, summary: str = "", next_actions: list[str] | None = None) -> dict[str, Any]:

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Epistemic compiler policy v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "diagnostics",
+    "independence",
+    "fixits",
+    "revalidation_costs",
+    "retrieval",
+    "context"
+  ],
+  "properties": {
+    "schema_version": { "const": "epistemic-policy.v1" },
+    "diagnostics": { "type": "object" },
+    "independence": { "type": "object" },
+    "fixits": { "type": "object" },
+    "revalidation_costs": { "type": "object" },
+    "retrieval": { "type": "object" },
+    "context": { "type": "object" }
+  },
+  "additionalProperties": true
+}

@@ -1,260 +1,299 @@
 ---
 name: long-run-agent
-description: Run long Codex tasks through a worker subagent so the main chat stays thin and avoids automatic compaction. Use when the user wants a long-running, autonomous, steerable task with a shared `.agent/live.md` control plane for user direction, agent questions, and user replies; when orchestration should happen in subagents rather than the main thread; or when the user explicitly asks to prevent main-thread context growth during extended work.
+description: Run long Codex tasks through one steerable worker and a standalone local epistemic compiler. Use when substantial work must survive context loss, preserve claims and evidence, expose bounded recall, or accept user steering through a shared .agent/live.md control plane.
 ---
 
 # Long Run Agent
 
-## Overview
+## Purpose
 
-Use one worker subagent as the only place where substantial task state accumulates. Keep the main thread limited to loading this skill, creating or naming the run directory, spawning the worker, and reporting the `.agent/live.md` path.
+Keep the main chat thin while one worker owns all substantive architecture,
+implementation, verification, durable state, and handoff work. The worker uses
+a standalone epistemic compiler to preserve why conclusions are currently
+warranted, what could defeat them, and what must be revalidated after change.
 
-Create exactly one subagent total: the main thread creates the worker, and the worker must not create any additional subagents.
+Create exactly one worker. The worker must not spawn, delegate to, or request
+additional subagents.
 
-Keep the parent turn alive when the host provides a subagent wait or mailbox mechanism. A durable control plane preserves state, but it does not by itself create a new user-visible chat message after the parent turn ends.
-
-File edits cannot literally interrupt the model. Treat `.agent/live.md` as a mailbox: the worker runs the watcher script and checks it at startup, after each meaningful batch of work, before risky changes, and whenever it is waiting for user input.
-
-## Mission Harness
-
-For long runs that need durable truth preservation, use the minimal mission
-harness:
-
-```bash
-python3 <skill-path>/scripts/install_skill.py --json
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> init
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> run start --goal "bounded task"
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> claim add --id <claim-id> --claim "..." --source-path <path> --source-kind <kind> --status tested
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> claim disprove --id <claim-id> --evidence-artifact <artifact-id> --notes "..."
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> claim history --id <claim-id>
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> relation add --source-type artifact --source-id <artifact-id> --relation supports --target-type claim_revision --target-id <revision-id>
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> relation list --endpoint-type claim --endpoint-id <claim-id>
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> run close --outcome "..." --command "..." --test "..." --next-action "..."
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> friction add --category verification_gap --description "..." --impact "..." --proposed-harness-need "..."
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> friction settle --id <friction-id> --status consolidated --root-cause-id <root-id> --release-disposition deferred --rationale "..."
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> friction report --fail-on-ambiguous-open
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> state preflight
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> state compact-live
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> validate
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> state summarize
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> index rebuild
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> index search "query terms"
-python3 <skill-path>/scripts/mission_harness.py --root <project-root> index status
-python3 <skill-path>/scripts/mission_records_recent.py --root <project-root> claims --limit 5
-python3 <skill-path>/scripts/mission_records_recent.py --root <project-root> relations --limit 5
-python3 <skill-path>/scripts/mission_artifact_materialize.py --root <project-root> --id <artifact-id>
-python3 <skill-path>/scripts/mission_artifact_materialize.py --root <project-root> --path <new-evidence-path>
-python3 <skill-path>/scripts/mission_artifact_materialize.py --root <project-root> --path <input-path> --stage-copy /private/tmp/<stable-input>
-python3 <skill-path>/scripts/watch_live_file.py <project-root>/.agent/live.md --create --interval 1
-python3 <skill-path>/scripts/reveal_live_file.py <project-root>/.agent/live.md --skip-if-open
-```
-
-When a local MCP client is available, `long-run-agent-mcp` exposes the same
-authoritative harness through namespaced `mission_*` tools. Prefer
-`mission_control_read` at startup and before major steps; pass its previous
-SHA-256 so unchanged `live.md` content is not repacked into context. A composed
-MCP server may register these tools with
-`long_run_agent_skill.mcp_tools.register_mission_tools`, but `.agent/` remains
-the only mission truth store.
-
-The harness creates a `.agent/` directory with a human-readable control plane
-(`live.md`), durable Markdown state (`current_state.md`, `constitution.md`,
-`known_failures.md`, `decisions.md`), and portable structured records
-(`runs.jsonl`, `claims.json`, `artifacts.json`, `friction.jsonl`,
-`evidence_relations.jsonl`).
-
-Use it when a run needs to preserve claims, artifacts, failures, verification,
-and process friction over time. Do not use it to add ceremony. If a piece of
-state matters after compaction or handoff, record it outside `live.md`.
-
-Operational rules:
-
-1. At the beginning of substantial work, read `.agent/live.md`,
-   `.agent/current_state.md`, `.agent/known_failures.md`,
-   `.agent/decisions.md`, `.agent/claims.json`,
-   `.agent/evidence_relations.jsonl`, and recent `.agent/runs.jsonl` records
-   when they exist.
-2. Before major or hard-to-unwind steps, re-read `.agent/live.md`.
-3. At run close, record commands, tests, files changed, failures, claims,
-   artifacts, evidence relationship ids, and next actions with `run close`.
-4. Record process or tooling pain with `friction add` instead of burying it in
-   chat-only notes. If the pain repeats a known pattern, attach
-   `--root-cause-id` or settle the old item instead of creating another
-   disconnected open item.
-5. Run `validate` before treating the harness state as reliable.
-6. During an open run, `state summarize` copies the active goal, failures, and
-   next actions from `live.md` into `current_state.md`; keep those sections current.
-7. On macOS, initialized state operations automatically request any evicted
-   File Provider state before reading; use `state preflight` when a diagnostic
-   readiness report is needed.
-8. If an open run makes `live.md` too large to serve as a control plane, first
-   record durable claims/artifacts/friction, then run `state compact-live`.
-   It validates those durable references and archives the verbose snapshot
-   before replacing evidence-list sections with a typed archive pointer. Run
-   close recovers genuine verification and claim/artifact references through
-   archive chains.
-9. If an evidence path may be File Provider-backed or a verification read
-   stalls, run `mission_artifact_materialize.py --id <artifact-id>` for a
-   recorded artifact, or `--path <new-evidence-path>` before registration.
-   This verifies availability only; it does not interpret evidence or upgrade
-   a claim.
-10. If a long-running verifier must consume an evictable regular-file artifact,
-    add `--stage-copy <new-local-path>` and pass the verified staged copy to the
-    verifier. The command will not overwrite an existing staged path.
-11. When previous work becomes hard to rediscover with direct file reads, run
-    `index rebuild` and `index search`. Treat the SQLite database as a derived
-    convenience index only; durable truth remains in Markdown, JSON, and JSONL.
-12. When you need the latest claims, artifacts, friction, or runs, use
-    `mission_records_recent.py` instead of hand-parsing state files and
-    guessing each JSON shape.
-13. Before release, handoff, or a long run closeout, run `friction report`.
-    Ambiguous open friction means the ledger needs triage. Preserve repeated
-    evidence, but consolidate it around root causes, release dispositions, and
-    verification paths so future agents can tell repeated evidence from
-    independent unresolved issues.
-14. Treat claims as append-only revisions. Reuse the stable claim id with
-    `claim add` to advance it; inspect `claim history` rather than overwriting
-    prior conclusions. When evidence disproves a claim, register that evidence
-    as uniquely identified artifacts and use `claim disprove`. Never use a
-    generic status edit that severs the disproval from its evidence.
-15. Use `relation add` for explicit support, refutation, corroboration,
-    contradiction, derivation, reproduction, documentation, causation,
-    supersession, or retraction. Both typed endpoints must resolve, and an
-    artifact endpoint must have a unique id.
+The compiler is local and deterministic. It does not require a model or network
+for validation, reduction, resume, or rebuild. Its append-only semantic ledger
+is authoritative; generated Markdown and SQLite are disposable views.
 
 ## Main-Thread Workflow
 
-1. Pick a run directory outside the chat context. Default to `~/Documents/codex-long-runs/<YYYYMMDD-HHMMSS>-<slug>/`.
-2. Initialize the mission harness in that directory and use `<run-dir>/.agent/live.md` as the only active steering file.
-3. Spawn exactly one worker subagent for the actual task. Use `fork_context=false` when available so the worker starts from the minimal prompt instead of inheriting the main chat history.
-4. Do not spawn any other subagents. The worker also must not spawn child subagents.
-5. Pass the worker:
-   - the user's task verbatim,
-   - this skill path,
-   - the run directory,
-   - the live control path,
-   - the instruction that all orchestration, exploration, implementation, and verification belong inside the worker context without creating more subagents.
-6. Do not duplicate the worker's work in the main thread. Do not stream detailed progress back into the main thread. If the user sends steering in chat, append or forward only that steering to `live.md` or the worker.
-7. Tell the user where `live.md` is and that they can edit it to steer, answer questions, stop, or request status.
-8. If the host provides a subagent wait or mailbox mechanism, keep the parent turn active with that mechanism. Prefer long event-driven waits over busy polling. Do not send a final response merely because the worker has started.
-9. When the worker reports completion, a blocker, or a question requiring user input, immediately send the user a self-contained status message. The user must not need to ask for progress to surface an already-recorded terminal state.
-10. If the host cannot keep the parent turn active or wake it after return, state before returning that automatic chat notification is unavailable and that `live.md` is the status source. Do not promise a later chat message.
-11. Do not treat apparent task completion as the end of the durable worker session. The worker should go dormant and wait for the next `live.md` update unless the user explicitly directs it to stop.
+1. Choose a run directory, normally under
+   ~/Documents/codex-long-runs/<timestamp>-<slug>.
+2. Initialize the run and start it with the repository or installed CLI.
+3. Spawn exactly one worker with the task verbatim, this skill path, run
+   directory, live control path, repository path, and branch constraints.
+4. Keep the parent turn thin. Forward later user steering into live.md and the
+   worker without independently implementing the task.
+5. Keep the parent turn alive with host wait or mailbox support when available.
+6. Surface a worker question, blocker, or completion promptly and
+   self-containedly.
+7. Do not treat apparent completion as termination. The worker becomes dormant
+   and remains steerable unless the user says FINALIZE AND STOP.
 
-Worker prompt template:
+Suggested worker prompt:
 
-```text
+~~~text
 Use the long-run-agent skill at <skill-path> as the operating procedure.
 
-Task:
-<verbatim user task>
+Task, verbatim:
+<user task>
 
-Run directory: <run-dir>
-Live control: <run-dir>/.agent/live.md
+Repository: <repository>
+Run directory: <run-directory>
+Live control: <run-directory>/.agent/live.md
 
-You are the only worker for this long run. Keep the main thread thin: do all substantive orchestration, research, implementation, verification, and state tracking in your own context and artifacts. Do not spawn, delegate to, or request any additional subagents. Create and maintain `.agent/live.md`. Run the watcher script from the skill and check it regularly. If you need user input, write the question into `live.md` and wait for the user's reply there. Treat STOP or PAUSE directives in `live.md` as higher priority than the original task.
-Before becoming dormant or waiting for user input, send the parent agent a concise completion, blocked, or question message using the host's subagent mailbox when available. Recording state in `live.md` remains mandatory and is not replaced by the message.
-```
+You are the only worker. Do all substantive work, verification, durable state,
+and milestone publication in your own context and artifacts. Do not create or
+request child subagents. Start and retain the live.md watcher, reveal live.md,
+and check it after every meaningful batch and before hard-to-unwind changes.
+Use the epistemic compiler for durable semantics. On completion, notify the
+parent with branch, commit, tests, release status, and key artifacts, then
+become dormant unless the user says FINALIZE AND STOP.
+~~~
 
-## Worker Workflow
+## Worker Startup
 
-1. Create the run directory.
-2. Initialize the mission harness, then start the watcher so it creates `live.md` if needed:
+Use the same root for the compiler and live control:
 
-```bash
-python3 <skill-path>/scripts/mission_harness.py --root <run-dir> init
-python3 <skill-path>/scripts/watch_live_file.py <run-dir>/.agent/live.md --create --interval 1
-```
+~~~bash
+python3 <skill-path>/scripts/mission_harness.py --root <run-directory> init --goal "<goal>"
+python3 <skill-path>/scripts/mission_harness.py --root <run-directory> start --goal "<goal>"
+python3 <skill-path>/scripts/watch_live_file.py <run-directory>/.agent/live.md --create --interval 1
+python3 <skill-path>/scripts/reveal_live_file.py <run-directory>/.agent/live.md --skip-if-open
+~~~
 
-3. At the start of the session, reveal `live.md` in Finder, Windows File Explorer, or the local file manager unless it already appears to be open:
+Retain the watcher process for the worker session. Check its output and read
+live.md:
 
-```bash
-python3 <skill-path>/scripts/reveal_live_file.py <run-dir>/.agent/live.md --skip-if-open
-```
+- at startup and resume
+- after each meaningful implementation or verification batch
+- before a branch rewrite, release, install replacement, destructive cleanup,
+  or other hard-to-unwind operation
+- whenever waiting for user input
+- before declaring completion
 
-4. Keep the watcher session running. Poll its output after each batch of work and before decisions that would be hard to unwind.
-5. Do not create child subagents. Complete the long run in this worker context, using local tools and durable run-directory artifacts instead of delegation.
-6. Maintain `.agent/live.md` with the stable sections created by `init`.
-7. If blocked on a user decision, update `Agent Questions`, set `Run Status` to waiting, notify the parent through the host mailbox when available, and wait for a file change before continuing.
-8. If `live.md` says `STOP`, stop after making the workspace consistent and write a brief status. If it says `PAUSE`, stop taking new actions and wait for `RESUME`.
-9. Save durable artifacts in the run directory: notes, logs, generated files, validation outputs, and final summaries that would otherwise bloat the main chat.
-10. When the current task appears complete, do not exit. Update `Agent Status` to `dormant`, write the completion summary and artifact paths into `live.md` or durable run records, notify the parent through the host mailbox when available, then wait for the next file update.
-11. End the worker only when the user gives an explicit termination directive such as `STOP` or `FINALIZE AND STOP`. A plain `FINALIZE` means write a concise final summary and then return to dormant waiting.
-12. Keep final responses concise. Point to the run directory and the important artifact paths instead of pasting long logs.
+File edits cannot interrupt a running model invocation. live.md is a mailbox,
+not an interrupt primitive. Newer user steering overrides older conflicting
+instructions.
 
-## Live File Rules
+## Durable Layout
 
-Use plain Markdown. Keep the newest user instruction as authoritative when it conflicts with earlier instructions.
+The compiler owns these files:
 
-Never rely on chat-only steering during the worker run. If important direction arrives in chat, copy it into `.agent/live.md` so the worker's state remains self-contained.
+~~~text
+.agent/
+  live.md
+  ledger.jsonl
+  retrieval.jsonl
+  policy.json
+  current.md
+  state.sqlite
+  checkpoint.json
+~~~
 
-Recommended initial file:
+- ledger.jsonl is the append-only, hash-chained semantic authority.
+- retrieval.jsonl is append-only recall, suggestion, and feedback telemetry.
+  It is durable but never becomes epistemic truth implicitly.
+- policy.json controls deterministic reduction and bounded context.
+- current.md is a compact generated human view.
+- state.sqlite is a disposable query and projection view.
+- checkpoint.json stores verified pointers, not a second summary of truth.
+- live.md is the only user steering/control document.
 
-```markdown
+Do not invent parallel CONTROL.md, scratch truth files, or replacement
+checkpoints. Durable notes and test logs may live elsewhere in the run
+directory, but semantic authority belongs in the compiler ledger.
+
+## Semantic Write Contract
+
+Prefer high-level operations over hand-editing state:
+
+~~~bash
+long-run-agent --root <run-directory> observe artifact --data '<json>'
+long-run-agent --root <run-directory> observe evidence --data '<json>'
+long-run-agent --root <run-directory> observe dependency --data '<json>'
+long-run-agent --root <run-directory> observe verification --data '<json>'
+long-run-agent --root <run-directory> assert --data '<json>'
+long-run-agent --root <run-directory> assumption --data '<json>'
+long-run-agent --root <run-directory> argument --data '<json>'
+long-run-agent --root <run-directory> attack --data '<json>'
+long-run-agent --root <run-directory> ask --data '<json>'
+long-run-agent --root <run-directory> decide --data '<json>'
+~~~
+
+Every semantic write returns separate categories:
+
+- committed contains only the requested durable semantic operations.
+- derived contains deterministic consequences.
+- diagnostics contains defects, changed safety, and concrete repair paths.
+- suggested contains non-authoritative relationship candidates.
+- recall contains bounded historical context relevant to the operation.
+
+Never report a suggestion, recall result, generated view, or diagnostic as a
+committed fact. Use --preview or the raw preview command before uncertain
+writes. Apply raw EpistemicDelta only when a high-level operation cannot express
+the intended semantics.
+
+## Reasoning Rules
+
+Evidence and provenance establish what was observed; they are not themselves
+arguments. Claims are append-only revisions. An argument has explicit premises,
+a warrant, and optional assumptions or dependency conditions. All conjunctive
+premises must be warranted. Alternative grounded arguments can provide
+independent support.
+
+Support is computed by least fixed point. A support cycle with no grounded
+entry evidence does not warrant any member and must produce a diagnostic.
+Independent support depends on root evidence and provenance/correlation
+families, not merely the number of argument nodes.
+
+Attacks are first-class and require explicit grounds plus a warrant:
+
+- rebut attacks a claim conclusion
+- undercut attacks an argument or warrant
+- undermine attacks a premise or evidence item
+
+Assumptions are semantic commitments. Dependency bindings are mechanical
+conditions such as versions, hashes, or environment identities. Keep them
+distinct so changed dependencies can invalidate applicability without erasing
+history.
+
+Questions preserve known ignorance. Decisions record their claim, evidence,
+assumption, and dependency basis. When support or dependencies change, reopen
+affected questions, mark impacted decisions, emit diagnostics, and retain the
+historical basis.
+
+Artifact equality and evidence identity are also distinct. Exact stable identity
+may collapse duplicate artifact registrations. Similar text or bytes alone
+must never merge separate observations.
+
+## Recall And Context
+
+Load bounded context at startup and resume:
+
+~~~bash
+long-run-agent --root <run-directory> context
+long-run-agent --root <run-directory> context --since-generation <n>
+long-run-agent --root <run-directory> query changes-since --id <n>
+long-run-agent --root <run-directory> expand <entity-id> --representation structure
+~~~
+
+Context is divided into WorkerScope and ActiveDelta. Respect completeness flags
+and continuation cursors; do not treat a truncated response as exhaustive.
+
+Automatic recall should provide compact capsules, not inject raw history.
+Selection accounts for relevance, graph proximity, recency, prior utility,
+negative feedback, root-evidence correlation, and diversity. Expand only the
+entities needed at the cheapest useful representation.
+
+Structural use of recalled material may record inferred positive feedback after
+a successful semantic commit. Negative feedback must be explicit and contextual:
+
+~~~bash
+long-run-agent --root <run-directory> feedback <event-id> --entity-id <id> --action dismissed
+long-run-agent --root <run-directory> feedback <suggestion-id> --action accepted
+long-run-agent --root <run-directory> feedback <suggestion-id> --action rejected
+~~~
+
+Accepting a relation suggestion creates a normal semantic transaction.
+Rejection or dismissal changes retrieval behavior only.
+
+## Checkpoint And Resume
+
+Checkpoint before interruption or a major phase boundary:
+
+~~~bash
+long-run-agent --root <run-directory> checkpoint
+long-run-agent --root <run-directory> resume
+~~~
+
+Resume verifies both hash chains, rebuilds disposable state offline, validates
+the checkpoint pointers, and returns bounded context. If generated state is
+missing or corrupt, rebuild it rather than reconstructing authority from
+current.md or memory:
+
+~~~bash
+long-run-agent --root <run-directory> rebuild
+long-run-agent --root <run-directory> validate
+~~~
+
+## Live Control
+
+Maintain stable headings so the user and watcher can scan changes:
+
+~~~markdown
 # Live Control
 
 ## User Updates
-- Add steering here. Newer instructions override older conflicting instructions.
+- Newer steering wins when instructions conflict.
 
 ## Current Goal
-- Add the active goal here.
+- Active bounded objective.
 
 ## Constraints
-- Add constraints here.
+- Branch, safety, source, publication, and validation boundaries.
 
 ## Agent Status
-- Status: starting
+- Run ID:
+- Status: running
 
 ## Interrupts / Corrections
-- None recorded yet.
+- Durable corrections to assumptions or scope.
 
 ## Decisions Made This Run
-- None recorded yet.
+- Architecture and release decisions.
 
 ## Commands Run
-- None recorded yet.
+- Important commands and milestones.
 
 ## Tests / Verification
-- None recorded yet.
+- Exact test evidence and known gaps.
 
 ## Failures / Blockers
-- None recorded yet.
-
-## Claims Touched
-- None recorded yet.
+- Honest failures, unknowns, and blocked work.
 
 ## Artifacts Produced
-- None recorded yet.
-
-## Friction Observed
-- None recorded yet.
+- Durable paths and published commits.
 
 ## Next Actions
-- None recorded yet.
-```
+- Next executable steps.
+~~~
 
-## Watcher Script
+Keep live.md compact enough for steering. Record detailed logs as run artifacts
+and summarize their meaning through semantic observations, claims, questions,
+or decisions.
 
-Use `scripts/watch_live_file.py` to create `live.md` and print the full file whenever it changes. The script is intentionally simple and portable; it uses file hashing plus polling instead of OS-specific file events.
+## Release Discipline
 
-Typical worker usage:
+Before a milestone push or installed-skill replacement:
 
-```bash
-python3 /path/to/long-run-agent/scripts/watch_live_file.py /path/to/project/.agent/live.md --create --interval 1
-```
+1. Read live.md and honor any new steering.
+2. Run the full test suite and deterministic rebuild validation.
+3. Verify all Python source files remain below 1000 lines.
+4. Verify CLI and MCP expose the same compiler behavior.
+5. Build and install the package into a clean target.
+6. Run the skill installer into an isolated target and verify exclusions.
+7. Record failures and unresolved diagnostics honestly.
+8. Push only the requested branch. Never merge main without explicit direction.
 
-For one-shot checks in scripts or diagnostics:
+Replace the active installed skill only after release validation passes. Verify
+the installed copy matches the certified repository tree and rerun smoke tests
+from the installed location.
 
-```bash
-python3 /path/to/long-run-agent/scripts/watch_live_file.py /path/to/project/.agent/live.md --create --once
-```
+## Completion And Dormancy
 
-## File Manager Reveal Script
+Close the run semantically, update live.md with branch, commit, tests, release
+status, installed-sync status, and key artifacts, then notify the parent when
+host messaging is available:
 
-Use `scripts/reveal_live_file.py` once at session startup. On macOS it runs `open -R` to reveal `live.md` in Finder. On native Windows it runs File Explorer with `/select`. Under WSL it converts the path with `wslpath -w` and then opens Windows File Explorer. On other Linux environments it opens the containing folder with `xdg-open` when available.
+~~~bash
+long-run-agent --root <run-directory> close --outcome completed --summary "<summary>"
+~~~
 
-With `--skip-if-open`, it first makes a best-effort open-file check. macOS, Linux, and WSL use `lsof` when present. Native Windows uses Sysinternals `handle.exe` or `handle64.exe` when present; otherwise it cannot reliably detect already-open files and will still reveal the file.
-
-```bash
-python3 /path/to/long-run-agent/scripts/reveal_live_file.py /path/to/project/.agent/live.md --skip-if-open
-```
+After reporting completion, set the worker status to dormant and wait for
+steering. Stop the watcher and terminate only when the user explicitly says
+FINALIZE AND STOP.

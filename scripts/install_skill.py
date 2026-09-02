@@ -21,7 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 EXCLUDE_NAMES = {
     ".git",
     ".DS_Store",
+    ".pytest_cache",
     "__pycache__",
+    "build",
+    "dist",
 }
 EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
 
@@ -72,7 +75,11 @@ def host_targets(host: str, custom_target: str | None = None) -> list[Path]:
 
 
 def should_ignore(path: Path) -> bool:
-    return path.name in EXCLUDE_NAMES or (path.is_file() and path.suffix in EXCLUDE_SUFFIXES)
+    return (
+        path.name in EXCLUDE_NAMES
+        or path.name.endswith(".egg-info")
+        or (path.is_file() and path.suffix in EXCLUDE_SUFFIXES)
+    )
 
 
 def copy_tree(source: Path, target: Path) -> None:
@@ -134,7 +141,7 @@ def payload(steps: list[InstallStep], execute: bool, source: Path) -> dict[str, 
         "source": str(source),
         "steps": [asdict(step) for step in steps],
         "next_commands": [
-            "python3 <target>/scripts/mission_harness.py --root /tmp/long-run-agent-smoke init",
+            "python3 <target>/scripts/mission_harness.py --root /tmp/long-run-agent-smoke init --goal smoke",
             "python3 <target>/scripts/mission_harness.py --root /tmp/long-run-agent-smoke validate",
         ],
     }

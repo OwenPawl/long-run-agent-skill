@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Semantic transaction v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "sequence",
+    "transaction_id",
+    "previous_hash",
+    "committed_at",
+    "operations",
+    "transaction_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "epistemic-ledger.v1" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "transaction_id": { "type": "string", "minLength": 1 },
+    "previous_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "committed_at": { "type": "string" },
+    "run_id": { "type": "string" },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "epistemic_delta.v1.schema.json#/$defs/operation" }
+    },
+    "metadata": { "type": "object" },
+    "transaction_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}

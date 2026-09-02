@@ -1,4 +1,4 @@
-"""Local-stdio MCP server for durable long-running mission state."""
+"""Local stdio MCP server for the standalone epistemic compiler."""
 
 from __future__ import annotations
 

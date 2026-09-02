@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from .errors import SemanticError
@@ -122,7 +123,7 @@ class ContextQueryMixin:
             used += size
         consumed = offset + len(selected)
         complete = consumed >= len(entries)
-        return {
+        response = {
             "schema_version": "worker-context.v1",
             "generation": state["generation"],
             "goal": state.get("mission", {}).get("goal", ""),
@@ -138,6 +139,30 @@ class ContextQueryMixin:
             if not complete
             else "",
         }
+        telemetry = _event(
+            "retrieval.context_generated",
+            id=random_id("context"),
+            context_key=stable_id(
+                "context",
+                {
+                    "generation": state["generation"],
+                    "since_generation": boundary,
+                    "offset": offset,
+                },
+            ),
+            entity_ids=[
+                entry["entity_id"] for entry in selected if entry.get("entity_id")
+            ],
+            used_chars=used,
+            max_chars=char_limit,
+            entry_count=len(selected),
+            max_entities=entity_limit,
+            complete=complete,
+            raw_evidence_included=False,
+        )
+        transaction = self._record_telemetry([telemetry])
+        response["telemetry_transaction_id"] = transaction["transaction_id"]
+        return response
 
     def expand(
         self, entity_id: str, representation: str = "structure", max_depth: int | None = None
@@ -308,23 +333,22 @@ class ContextQueryMixin:
         elif kind == "impact":
             result = self._impact(state, entity_id, limit * 4)
         elif kind == "unknowns":
-            result = {
-                "open_questions": [
-                    item
-                    for item in state.get("questions", {}).values()
-                    if item.get("derived_status") != "resolved"
-                ],
-                "unsupported_claims": [
-                    item
-                    for item in state.get("claims", {}).values()
-                    if item.get("derived", {}).get("support_state") in {"unsupported", "contested"}
-                ],
-                "verification_gaps": [
-                    item
-                    for item in state.get("claims", {}).values()
-                    if item.get("derived", {}).get("verification_state") != "verified"
-                ],
-            }
+            result = [
+                {"unknown_type": "open_question", "entity": item}
+                for item in state.get("questions", {}).values()
+                if item.get("derived_status") != "resolved"
+            ]
+            result.extend(
+                {"unknown_type": "unsupported_claim", "entity": item}
+                for item in state.get("claims", {}).values()
+                if item.get("derived", {}).get("support_state")
+                in {"unsupported", "contested"}
+            )
+            result.extend(
+                {"unknown_type": "verification_gap", "entity": item}
+                for item in state.get("claims", {}).values()
+                if item.get("derived", {}).get("verification_state") != "verified"
+            )
         elif kind == "history":
             result = [
                 item for item in self.store.operations() if entity_id in operation_entity_ids([item])
@@ -342,10 +366,12 @@ class ContextQueryMixin:
             ]
         elif kind == "search":
             result = self._search(catalog, text)
+        elif kind == "telemetry":
+            result = self._telemetry_metrics(state)
         else:
             raise SemanticError(
                 "query kind must be belief, why, why-not, defeaters, assumptions, impact, "
-                "unknowns, history, changes-since, revalidate, or search"
+                "unknowns, history, changes-since, revalidate, search, or telemetry"
             )
         if not isinstance(result, list):
             return {"kind": kind, "generation": state["generation"], "result": result, "complete": True}
@@ -376,6 +402,101 @@ class ContextQueryMixin:
             )
             self._record_telemetry([event])
         return response
+
+    def _telemetry_metrics(self, state: dict[str, Any]) -> dict[str, Any]:
+        events = state.get("retrieval_events", [])
+        counts = Counter(item.get("event", "") for item in events)
+        automatic = [
+            item
+            for item in events
+            if item.get("event") == "retrieval.surfaced"
+            and item.get("mode") == "automatic_recall"
+        ]
+        searches = [
+            item
+            for item in events
+            if item.get("event") == "retrieval.surfaced"
+            and item.get("mode") == "search"
+        ]
+        contexts = [
+            item for item in events if item.get("event") == "retrieval.context_generated"
+        ]
+        resumes = [
+            item for item in events if item.get("event") == "retrieval.resume_completed"
+        ]
+        automatic_candidates = sum(len(item.get("candidates", [])) for item in automatic)
+        automatic_surfaced = sum(len(item.get("entity_ids", [])) for item in automatic)
+        semantic_operations = self.store.operations()
+        diagnostic_counts = Counter(
+            item.get("code", "") for item in state.get("diagnostics", [])
+        )
+        used_chars = [int(item.get("used_chars", 0)) for item in contexts]
+        return {
+            "schema_version": "epistemic-telemetry-summary.v1",
+            "generation": state["generation"],
+            "agent_maintenance": {
+                "explicit_memory_management_calls": (
+                    counts["retrieval.context_generated"]
+                    + counts["retrieval.expanded"]
+                    + len(searches)
+                    + sum(
+                        item.get("type") == "checkpoint.created"
+                        for item in semantic_operations
+                    )
+                ),
+                "manual_searches": len(searches),
+                "explicit_relation_management_operations": sum(
+                    item.get("type") == "relation.asserted"
+                    for item in semantic_operations
+                ),
+                "state_administration_tokens": {
+                    "available": False,
+                    "value": None,
+                },
+            },
+            "recall": {
+                "automatic_events": len(automatic),
+                "automatic_candidates": automatic_candidates,
+                "automatic_capsules_surfaced": automatic_surfaced,
+                "expanded": counts["retrieval.expanded"],
+                "used_structurally": counts["retrieval.structurally_used"],
+                "dismissed": counts["retrieval.dismissed"],
+                "relation_suggestions_accepted": counts["suggestion.accepted"],
+                "relation_suggestions_rejected": counts["suggestion.rejected"],
+                "correlated_family_compression_ratio": (
+                    round(automatic_candidates / automatic_surfaced, 6)
+                    if automatic_surfaced
+                    else None
+                ),
+            },
+            "epistemic_correctness": {
+                "current_diagnostics_by_code": dict(sorted(diagnostic_counts.items())),
+                "support_loss_detections": diagnostic_counts["SUPPORT_LOST"],
+                "contested_claim_detections": diagnostic_counts["CLAIM_CONTESTED"],
+                "decision_basis_warnings": diagnostic_counts["DECISION_BASIS_CHANGED"],
+                "question_reopen_warnings": diagnostic_counts["QUESTION_REOPENED"],
+            },
+            "context_efficiency": {
+                "context_packs": len(contexts),
+                "total_context_chars": sum(used_chars),
+                "maximum_context_chars": max(used_chars, default=0),
+                "raw_evidence_avoided": sum(
+                    not item.get("raw_evidence_included", False) for item in contexts
+                ),
+                "expansions_required": counts["retrieval.expanded"],
+            },
+            "resume": {
+                "resume_events": len(resumes),
+                "zero_model_call_resumes": sum(
+                    item.get("model_calls") == 0 for item in resumes
+                ),
+                "manual_history_reads": sum(
+                    int(item.get("manual_history_reads", 0)) for item in resumes
+                ),
+                "elapsed_ms": [item.get("elapsed_ms") for item in resumes],
+            },
+            "complete": True,
+        }
 
     @staticmethod
     def _impact(state: dict[str, Any], entity_id: str, bound: int) -> list[dict[str, Any]]:

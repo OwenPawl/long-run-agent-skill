@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Epistemic checkpoint v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "ledger_generation",
+    "ledger_transaction_hash",
+    "state_hash",
+    "context_generation"
+  ],
+  "properties": {
+    "schema_version": { "const": "epistemic-checkpoint.v1" },
+    "id": { "type": "string", "minLength": 1 },
+    "ledger_generation": { "type": "integer", "minimum": 0 },
+    "ledger_transaction_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "state_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "run_id": { "type": "string" },
+    "goal": { "type": "string" },
+    "steering": { "type": "string" },
+    "open_question_ids": { "type": "array", "items": { "type": "string" } },
+    "important_dependency_bindings": { "type": "array", "items": { "type": "object" } },
+    "worker_scope_entity_ids": { "type": "array", "items": { "type": "string" } },
+    "context_generation": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}
