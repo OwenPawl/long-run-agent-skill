@@ -89,6 +89,7 @@ The compiler owns these files:
   live.md
   ledger.jsonl
   retrieval.jsonl
+  skill-calls.log
   policy.json
   current.md
   state.sqlite
@@ -98,11 +99,25 @@ The compiler owns these files:
 - ledger.jsonl is the append-only, hash-chained semantic authority.
 - retrieval.jsonl is append-only recall, suggestion, and feedback telemetry.
   It is durable but never becomes epistemic truth implicitly.
+- skill-calls.log is passive operational logging of exact public requests and
+  surfaced responses. It is never semantic or retrieval authority.
 - policy.json controls deterministic reduction and bounded context.
 - current.md is a compact generated human view.
 - state.sqlite is a disposable query and projection view.
 - checkpoint.json stores verified pointers, not a second summary of truth.
 - live.md is the only user steering/control document.
+
+CLI and MCP calls are tracked automatically at their shared public dispatch
+boundaries. Watch them with:
+
+~~~bash
+tail -f <run-directory>/.agent/skill-calls.log
+~~~
+
+Override the location with `LONG_RUN_AGENT_SKILL_CALL_LOG`; relative overrides
+resolve beneath the mission root. Tracking must not create epistemic facts,
+change retrieval, or alter returned responses. Use the skill naturally rather
+than making artificial calls solely to populate the log.
 
 Do not invent parallel CONTROL.md, scratch truth files, or replacement
 checkpoints. Durable notes and test logs may live elsewhere in the run

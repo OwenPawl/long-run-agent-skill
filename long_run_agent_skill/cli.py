@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .call_tracker import track_public_call
 from .compiler import EpistemicCompiler
 from .errors import EpistemicError
 
@@ -140,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     compiler = EpistemicCompiler(args.root)
     if args.command == "init":
         return compiler.initialize(goal=args.goal, force=args.force)
@@ -190,15 +191,39 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
     raise EpistemicError(f"unhandled command: {args.command}")
 
 
+def _error_payload(exc: Exception) -> dict[str, str]:
+    return {"status": "failed", "error": str(exc)}
+
+
+def dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    request = getattr(args, "_public_request", None)
+    if request is None:
+        request = {
+            key: value
+            for key, value in vars(args).items()
+            if not key.startswith("_")
+        }
+    return track_public_call(
+        args.root,
+        args.command,
+        request,
+        lambda: _dispatch(args),
+        surface="cli",
+        error_response=_error_payload,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    public_request = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(public_request)
+    args._public_request = {"argv": public_request}
     try:
         result = dispatch(args)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result.get("status", "success") == "success" else 1
     except (EpistemicError, OSError, ValueError) as exc:
-        print(json.dumps({"status": "failed", "error": str(exc)}, indent=2), file=sys.stderr)
+        print(json.dumps(_error_payload(exc), indent=2), file=sys.stderr)
         return 1
 
 

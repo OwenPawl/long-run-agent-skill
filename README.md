@@ -35,6 +35,7 @@ Initialization creates this state beneath the selected mission root:
   live.md
   ledger.jsonl
   retrieval.jsonl
+  skill-calls.log
   policy.json
   current.md
   state.sqlite
@@ -46,7 +47,37 @@ separate hash-chained record of recall, suggestion, and feedback behavior;
 those records never become epistemic truth implicitly. policy.json controls
 bounded context, recall, and derivation. current.md and state.sqlite are
 generated views. checkpoint.json contains only verified pointers into durable
-state. live.md remains the sole user steering and control file.
+state. live.md remains the sole user steering and control file. skill-calls.log
+is passive operational observability: it records exact public requests and
+surfaced responses but is never replayed as semantic authority or retrieval
+telemetry.
+
+## Skill Call Tracking
+
+Every CLI and MCP operation appends one human-readable, clearly delimited block
+to the mission's default tracker log:
+
+~~~text
+<mission-root>/.agent/skill-calls.log
+~~~
+
+Each block contains a unique call ID, timestamp, operation and public surface,
+worker/run/session identifiers when available, status, duration, payload sizes,
+epistemic generation before and after, and the exact request and surfaced
+response payloads. Calls that return failures and operations that raise errors
+still close their blocks. A lock-protected append keeps concurrent blocks from
+interleaving. Tracker failures are reported operationally but never change the
+compiler result.
+
+Watch a mission live with:
+
+~~~bash
+tail -f <mission-root>/.agent/skill-calls.log
+~~~
+
+Set `LONG_RUN_AGENT_SKILL_CALL_LOG` to an absolute path, or to a path relative
+to the mission root, to override the default. Tracking is automatic; workers
+should use the skill naturally rather than making artificial monitoring calls.
 
 ## Install
 
@@ -198,7 +229,7 @@ questions, decisions, bounded recall/context, telemetry, checkpoint/resume,
 multidimensional worker state, repeat inhibition with material-change override,
 corrective recall, contextual feedback strength, code actions, revisable
 relation rationale, CLI/MCP parity, package installation, installer behavior,
-and the under-1000-line source limit.
+passive public-call tracking, and the under-1000-line source limit.
 
 ## License
 

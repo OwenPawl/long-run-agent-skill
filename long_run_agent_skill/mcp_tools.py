@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
+from functools import wraps
 from typing import Any
 
+from .call_tracker import track_public_call
 from .compiler import EpistemicCompiler
 from .mcp_runtime import compiler_call, control_snapshot
 
@@ -13,8 +16,26 @@ def register_mission_tools(server: Any) -> list[str]:
     names: list[str] = []
 
     def tool(name: str):
-        names.append(name)
-        return server.tool(name=name)
+        def register(handler):
+            names.append(name)
+            signature = inspect.signature(handler)
+
+            @wraps(handler)
+            def tracked(*args, **kwargs):
+                bound = signature.bind_partial(*args, **kwargs)
+                request = dict(bound.arguments)
+                root = request.get("root", "")
+                return track_public_call(
+                    root,
+                    name,
+                    request,
+                    lambda: handler(*args, **kwargs),
+                    surface="mcp",
+                )
+
+            return server.tool(name=name)(tracked)
+
+        return register
 
     @tool("mission_init")
     def mission_init(root: str, goal: str = "", force: bool = False) -> dict[str, Any]:
