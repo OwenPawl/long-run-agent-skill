@@ -30,8 +30,10 @@ class MissionCase(unittest.TestCase):
             "artifact",
             {
                 "id": entity_id,
-                "name": f"Artifact {entity_id}",
-                "description": f"Content identity for {entity_id}",
+                "annotation": {
+                    "subject": f"Artifact {entity_id}",
+                    "predicate": "identifies recorded content",
+                },
                 "content_hash": content_hash or f"sha256:{entity_id}",
             },
         )
@@ -48,11 +50,12 @@ class MissionCase(unittest.TestCase):
     ) -> dict[str, Any]:
         data: dict[str, Any] = {
             "id": entity_id,
-            "name": f"Observation {entity_id}",
-            "description": f"Observed result {entity_id}",
+            "annotation": {
+                "subject": subject,
+                "predicate": f"records observation {entity_id}",
+            },
             "source_run": source_run,
             "producer": producer,
-            "subject": subject,
             **extra,
         }
         if artifact_id:
@@ -72,13 +75,18 @@ class MissionCase(unittest.TestCase):
         return self.compiler.assert_claim(
             {
                 "id": claim_id,
-                "name": f"Claim {claim_id}",
-                "description": f"Scoped proposition {claim_id}",
+                "annotation": {
+                    "subject": subject,
+                    "predicate": f"asserts proposition {claim_id}",
+                },
                 "proposition": f"Proposition {claim_id}",
-                "subject": subject,
                 "premises": [evidence_ref(item) for item in premise_ids],
                 "warrant": {"statement": "The recorded observations warrant this scoped proposition."},
                 "argument_id": argument_id or f"arg_{claim_id}",
+                "argument_annotation": {
+                    "subject": subject,
+                    "predicate": f"warrants proposition {claim_id}",
+                },
                 "dependencies": dependencies or [],
                 "assumptions": assumptions or [],
             }

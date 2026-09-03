@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from long_run_agent_skill.compiler import operation
+from long_run_agent_skill.materialized_views import resolve_entity_view
 
 from common import MissionCase, evidence_ref
 
@@ -111,7 +114,17 @@ class CodeActionAndAnnotationTests(MissionCase):
             relation["rationale"],
             "The corrected rationale describes the same relation.",
         )
-        history = self.compiler.query("history", "semantic_relation")["result"]
+        compact_history = self.compiler.inspect(
+            "semantic_relation", facets=["history"]
+        )["history"]
+        self.assertTrue(
+            any(item["type"] == "annotation.revised" for item in compact_history)
+        )
+        history = json.loads(
+            resolve_entity_view(self.root, "semantic_relation").read_text(
+                encoding="utf-8"
+            )
+        )["history"]
         asserted = next(item for item in history if item["type"] == "relation.asserted")
         self.assertEqual(
             asserted["data"]["rationale"],
@@ -168,7 +181,7 @@ class CodeActionAndAnnotationTests(MissionCase):
             },
         )
 
-        self.compiler.expand("active_relation")
+        self.compiler.inspect("active_relation")
         active = self.compiler.apply(
             {
                 "operations": [
@@ -189,7 +202,7 @@ class CodeActionAndAnnotationTests(MissionCase):
         )
         self.assertFalse(opportunity["authoritative"])
         self.assertEqual(opportunity["field"], "rationale")
-        self.assertIn("expanded", " ".join(opportunity["reasons"]))
+        self.assertIn("inspected", " ".join(opportunity["reasons"]))
         self.assertIn("structural", " ".join(opportunity["reasons"]))
         self.assertEqual(
             self.compiler.state()["relations"]["active_relation"]["rationale"],

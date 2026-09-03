@@ -13,8 +13,8 @@ class WorkerStateRefinementTests(MissionCase):
 
     def test_surface_adds_weak_coverage_and_inhibits_unchanged_repeat(self) -> None:
         self._historical_evidence("historical_needle", "needle")
-        search = self.compiler.query("search", text="historical needle")
-        self.assertEqual(search["result"][0]["entity_id"], "historical_needle")
+        search = self.compiler.search("historical needle")
+        self.assertEqual(search["results"][0]["entity_id"], "historical_needle")
 
         coverage = self.compiler.state()["worker_state"]["historical_needle"]
         self.assertEqual(coverage["content_coverage"]["estimate"], 0.25)
@@ -27,9 +27,9 @@ class WorkerStateRefinementTests(MissionCase):
 
     def test_reference_structural_use_and_expansion_affect_separate_dimensions(self) -> None:
         self._historical_evidence("historical_signal", "signal")
-        self.compiler.query("search", text="historical signal")
+        self.compiler.search("historical signal")
 
-        reference_write = self.compiler.apply(
+        reference_write = self.compiler.update(
             {
                 "operations": [
                     operation(
@@ -37,7 +37,10 @@ class WorkerStateRefinementTests(MissionCase):
                         id="annotation_signal",
                         entity_type="evidence",
                         entity_id="historical_signal",
-                        name="Historical signal observation",
+                        annotation={
+                            "subject": "Historical signal",
+                            "predicate": "records an observation",
+                        },
                         reason="Use a clearer active label",
                     )
                 ]
@@ -72,12 +75,24 @@ class WorkerStateRefinementTests(MissionCase):
             structural["retrieval_outcomes"]["structurally_used"], 1
         )
 
-        expanded = self.compiler.expand("historical_signal")
+        self.compiler._record_telemetry(
+            [
+                operation(
+                    "retrieval.expanded",
+                    id="internal_content_read_signal",
+                    context_key="internal-content-read",
+                    entity_ids=["historical_signal"],
+                )
+            ]
+        )
+        expanded = self.compiler.state()["worker_state"]["historical_signal"]
         self.assertEqual(
-            expanded["worker_state_coverage"]["content_coverage"]["estimate"],
+            expanded["content_coverage"]["estimate"],
             1.0,
         )
-        final = self.compiler.query("worker-state", "historical_signal")["result"][0]
+        final = self.compiler.inspect(
+            "historical_signal", facets=["worker-state"]
+        )["groups"]["worker_state"]["historical_signal"]
         self.assertGreaterEqual(final["retrieval_outcomes"]["expanded"], 1)
         self.assertEqual(final["content_coverage"]["estimate"], 1.0)
 
@@ -88,22 +103,31 @@ class WorkerStateRefinementTests(MissionCase):
         self.compiler.close("historical setup complete")
         self.compiler.start("current feedback work", run_id="feedback_current")
 
-        self.compiler.query("search", text="weak item")
+        self.compiler.search("weak_item")
         weak_source = self.compiler.state()["retrieval_events"][-1]
         weak = self.compiler.feedback(weak_source["id"], "weak_item", "dismissed")
         self.assertEqual(weak["feedback_strength"], "weak")
         self.assertFalse(weak["globally_demoted"])
 
-        self.compiler.query("search", text="strong item")
+        self.compiler.search("strong_item")
         strong_source = self.compiler.state()["retrieval_events"][-1]
-        self.compiler.expand("strong_item")
+        self.compiler._record_telemetry(
+            [
+                operation(
+                    "retrieval.expanded",
+                    id="internal_content_read_strong_item",
+                    context_key=strong_source["context_key"],
+                    entity_ids=["strong_item"],
+                )
+            ]
+        )
         strong = self.compiler.feedback(
             strong_source["id"], "strong_item", "dismissed"
         )
         self.assertEqual(strong["feedback_strength"], "strong")
         self.assertFalse(strong["globally_demoted"])
 
-        self.compiler.query("search", text="neutral item")
+        self.compiler.search("neutral_item")
         state = self.compiler.state()
         weak_state = state["worker_state"]["weak_item"]
         strong_state = state["worker_state"]["strong_item"]
@@ -116,7 +140,7 @@ class WorkerStateRefinementTests(MissionCase):
             "weak_item",
             {
                 item["entity_id"]
-                for item in self.compiler.query("search", text="weak item")["result"]
+                for item in self.compiler.search("weak_item")["results"]
             },
         )
 

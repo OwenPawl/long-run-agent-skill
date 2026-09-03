@@ -106,31 +106,63 @@ def register_mission_tools(server: Any) -> list[str]:
         """Record a decision with claims, evidence, assumptions, and dependency basis."""
         return compiler_call(root, lambda: EpistemicCompiler(root).decide(data, preview=preview))
 
-    @tool("mission_query")
-    def mission_query(
+    @tool("mission_update")
+    def mission_update(
         root: str,
-        kind: str,
-        entity_id: str = "",
-        text: str = "",
-        cursor: dict[str, Any] | None = None,
-        limit: int = 20,
+        delta: dict[str, Any],
+        preview: bool = False,
+        expected_generation: int | None = None,
     ) -> dict[str, Any]:
-        """Run belief, proof, impact, unknown, revalidation, history, or search queries."""
+        """Compile semantic input through the ordinary EpistemicDelta boundary."""
         return compiler_call(
             root,
-            lambda: EpistemicCompiler(root).query(
-                kind, entity_id, text=text, cursor=cursor, limit=limit
+            lambda: EpistemicCompiler(root).update(
+                delta,
+                preview=preview,
+                expected_generation=expected_generation,
             ),
         )
 
-    @tool("mission_expand")
-    def mission_expand(
-        root: str, entity_id: str, representation: str = "structure", max_depth: int | None = None
+    @tool("mission_search")
+    def mission_search(
+        root: str,
+        text: str,
+        cursor: dict[str, Any] | None = None,
+        limit: int = 50,
+        entity_types: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Expand a recall capsule without injecting unrelated raw evidence."""
+        """Discover compact candidates using structured epistemic semantics."""
         return compiler_call(
             root,
-            lambda: EpistemicCompiler(root).expand(entity_id, representation, max_depth),
+            lambda: EpistemicCompiler(root).search(
+                text,
+                cursor=cursor,
+                limit=limit,
+                entity_types=entity_types,
+            ),
+        )
+
+    @tool("mission_inspect")
+    def mission_inspect(
+        root: str,
+        entity_id: str = "",
+        facets: list[str] | None = None,
+        cursor: dict[str, Any] | None = None,
+        limit: int = 20,
+        max_depth: int | None = None,
+        since_generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Navigate bounded normalized topology without dumping full payloads."""
+        return compiler_call(
+            root,
+            lambda: EpistemicCompiler(root).inspect(
+                entity_id,
+                facets=facets,
+                cursor=cursor,
+                limit=limit,
+                max_depth=max_depth,
+                since_generation=since_generation,
+            ),
         )
 
     @tool("mission_feedback")
@@ -169,29 +201,13 @@ def register_mission_tools(server: Any) -> list[str]:
         """Validate both hash chains, policy, checkpoint, and materialized state hash."""
         return compiler_call(root, lambda: EpistemicCompiler(root).validate())
 
-    @tool("mission_preview")
-    def mission_preview(root: str, delta: dict[str, Any]) -> dict[str, Any]:
-        """Preview consequences without writing semantic or retrieval authority."""
-        return compiler_call(root, lambda: EpistemicCompiler(root).preview(delta))
-
-    @tool("mission_apply")
-    def mission_apply(
-        root: str, delta: dict[str, Any], expected_generation: int | None = None
-    ) -> dict[str, Any]:
-        """Apply an EpistemicDelta with an optional generation precondition."""
-        return compiler_call(
-            root,
-            lambda: EpistemicCompiler(root).apply(
-                delta, expected_generation=expected_generation
-            ),
-        )
-
     return names
 
 
 MISSION_OPERATING_CONTRACT = (
     "Use one worker and .agent/live.md for steering. Express semantic intent through "
-    "mission_observe, mission_assert, mission_ask, and mission_decide. Treat committed "
+    "mission_update or its semantic front ends, then use mission_search and mission_inspect. "
+    "Treat committed "
     "semantics, derived consequences, diagnostics, suggestions, and recall as distinct. "
     "Use mission_context at startup/resume, checkpoint before interruption, and validate "
     "before release. Suggestions never become epistemic authority until explicitly accepted."

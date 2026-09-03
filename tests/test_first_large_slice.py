@@ -25,20 +25,34 @@ class FirstLargeSliceScenarioTests(MissionCase):
         self.compiler.start("current feature decision", run_id="run_current")
         self.compiler.observe(
             "dependency",
-            {"id": "dependency_b", "name": "Repository revision", "value": "v1", "status": "current"},
+            {
+                "id": "dependency_b",
+                "annotation": {
+                    "subject": "Feature argument",
+                    "predicate": "requires repository revision v1",
+                },
+                "intrinsic_name": "Repository revision v1",
+                "value": "v1",
+                "status": "current",
+            },
         )
 
         # Steps 2-4: A supports C and the write recalls absent historical H.
         write_a = self.compiler.assert_claim(
             {
                 "id": "claim_c",
-                "name": "Current feature behavior",
-                "description": "Observed feature behavior in the current scope",
+                "annotation": {
+                    "subject": "Feature",
+                    "predicate": "works in the current repository revision",
+                },
                 "proposition": "The feature works in the current repository revision.",
-                "subject": "feature",
                 "premises": [evidence_ref("e1"), evidence_ref("e2")],
                 "warrant": {"statement": "Concordant runtime observations warrant the scoped behavior claim."},
                 "argument_id": "argument_a",
+                "argument_annotation": {
+                    "subject": "Concordant runtime observations",
+                    "predicate": "warrant current feature behavior",
+                },
             }
         )
         self.assertEqual(self.compiler.state()["claims"]["claim_c"]["derived"]["support_state"], "supported")
@@ -46,22 +60,32 @@ class FirstLargeSliceScenarioTests(MissionCase):
         self.assertIn("historical_h", recalled_ids)
         self.assertTrue(write_a["suggested"]["relations"])
 
-        # Steps 5-6: expanding and structurally using H infer positive feedback.
-        self.compiler.expand("historical_h")
+        # Steps 5-6: inspecting and structurally using H infer separate signals.
+        self.compiler.inspect("historical_h")
         self.compiler.assert_claim(
             {
                 "id": "claim_interpretation",
-                "name": "Historical mechanism relevance",
-                "description": "The historical mechanism informs current interpretation",
+                "annotation": {
+                    "subject": "Historical mechanism",
+                    "predicate": "informs current interpretation",
+                },
                 "proposition": "The historical mechanism is relevant to the current interpretation.",
-                "subject": "feature",
                 "premises": [claim_ref("historical_h")],
                 "warrant": {"statement": "The historical conclusion supplies the stated interpretive premise."},
                 "argument_id": "argument_interpretation",
+                "argument_annotation": {
+                    "subject": "Historical conclusion",
+                    "predicate": "warrants current interpretation",
+                },
             }
         )
         retrieval_events = self.compiler.state()["retrieval_events"]
-        self.assertTrue(any(item["event"] == "retrieval.expanded" for item in retrieval_events))
+        self.assertTrue(
+            any(
+                item["event"] == "retrieval.inspect_topology_surfaced"
+                for item in retrieval_events
+            )
+        )
         structural = [item for item in retrieval_events if item["event"] == "retrieval.structurally_used"]
         self.assertIn("historical_h", structural[-1]["entity_ids"])
 
@@ -69,18 +93,23 @@ class FirstLargeSliceScenarioTests(MissionCase):
         self.compiler.assert_argument(
             {
                 "id": "argument_b",
-                "name": "Independent verifier argument",
+                "annotation": {
+                    "subject": "Independent verifier observation",
+                    "predicate": "warrants current feature behavior",
+                },
                 "premises": [evidence_ref("e3")],
                 "dependencies": [{"dependency_id": "dependency_b"}],
                 "warrant": {"statement": "An independent verifier observation warrants the same claim."},
                 "conclusion": {"type": "claim", "id": "claim_c", "polarity": "support"},
-                "subject": "feature",
             }
         )
         self.compiler.decide(
             {
                 "id": "decision_d",
-                "name": "Feature shipment decision",
+                "annotation": {
+                    "subject": "Feature shipment",
+                    "predicate": "chooses to ship",
+                },
                 "choice": "Ship the feature.",
                 "alternatives": ["Do not ship the feature."],
                 "basis_claim_ids": ["claim_c"],
@@ -89,13 +118,16 @@ class FirstLargeSliceScenarioTests(MissionCase):
         self.compiler.ask(
             {
                 "id": "question_q",
-                "name": "Current feature status",
+                "annotation": {
+                    "subject": "Current feature",
+                    "predicate": "asks whether it works in this revision",
+                },
                 "question": "Does the feature work in the current revision?",
                 "related_claim_ids": ["claim_c"],
                 "candidate_claim_ids": ["claim_c"],
             }
         )
-        self.compiler.apply(
+        self.compiler.update(
             {
                 "operations": [
                     operation(
@@ -135,7 +167,16 @@ class FirstLargeSliceScenarioTests(MissionCase):
         # Steps 11-15: B loses scope, C needs revalidation, and D/Q are affected.
         lost_write = self.compiler.observe(
             "dependency",
-            {"id": "dependency_b", "name": "Repository revision", "value": "v2", "status": "current"},
+            {
+                "id": "dependency_b",
+                "annotation": {
+                    "subject": "Feature argument",
+                    "predicate": "encounters repository revision v2",
+                },
+                "intrinsic_name": "Repository revision v2",
+                "value": "v2",
+                "status": "current",
+            },
         )
         state = self.compiler.state()
         claim_state = state["claims"]["claim_c"]["derived"]
@@ -152,7 +193,7 @@ class FirstLargeSliceScenarioTests(MissionCase):
         # Steps 16-20: checkpoint, delete derived state, and resume with zero model calls.
         self.compiler.checkpoint("checkpoint_release_scenario")
         expected_hash = self.compiler.rebuild()["state_hash"]
-        Path(self.root, ".agent", "state.sqlite").unlink()
+        Path(self.root, ".agent", "views", "state.sqlite").unlink()
         fresh = EpistemicCompiler(self.root)
         resumed = fresh.resume()
         self.assertEqual(resumed["model_calls"], 0)
@@ -167,7 +208,7 @@ class FirstLargeSliceScenarioTests(MissionCase):
             resumed["context"]["budget"]["used_chars"],
             resumed["context"]["budget"]["max_chars"],
         )
-        metrics = fresh.query("telemetry")["result"]
+        metrics = fresh.inspect(facets=["telemetry"])["groups"]["telemetry"]
         self.assertGreaterEqual(metrics["resume"]["resume_events"], 1)
         self.assertGreaterEqual(metrics["resume"]["zero_model_call_resumes"], 1)
         self.assertEqual(fresh.validate()["status"], "success")

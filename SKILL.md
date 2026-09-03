@@ -91,9 +91,12 @@ The compiler owns these files:
   retrieval.jsonl
   skill-calls.log
   policy.json
-  current.md
-  state.sqlite
   checkpoint.json
+  views/
+    current.md
+    state.sqlite
+    index.json
+    entities/<deterministic-id>.json
 ~~~
 
 - ledger.jsonl is the append-only, hash-chained semantic authority.
@@ -102,8 +105,10 @@ The compiler owns these files:
 - skill-calls.log is passive operational logging of exact public requests and
   surfaced responses. It is never semantic or retrieval authority.
 - policy.json controls deterministic reduction and bounded context.
-- current.md is a compact generated human view.
-- state.sqlite is a disposable query and projection view.
+- views/ contains only disposable, offline-regenerable presentation state.
+- views/current.md is the compact generated human frontier.
+- views/state.sqlite is the disposable search and projection database.
+- views/index.json maps stable entity IDs to deterministic full entity views.
 - checkpoint.json stores verified pointers, not a second summary of truth.
 - live.md is the only user steering/control document.
 
@@ -125,9 +130,13 @@ directory, but semantic authority belongs in the compiler ledger.
 
 ## Semantic Write Contract
 
-Prefer high-level operations over hand-editing state:
+The conceptual epistemic interface is update, search, and inspect. update is
+the only semantic compiler/write boundary. Automatic recall is returned by
+qualifying updates; it is not a separate tool. Convenience commands compile to
+the same EpistemicDelta path:
 
 ~~~bash
+long-run-agent --root <run-directory> update --data '<epistemic-delta-json>'
 long-run-agent --root <run-directory> observe artifact --data '<json>'
 long-run-agent --root <run-directory> observe evidence --data '<json>'
 long-run-agent --root <run-directory> observe dependency --data '<json>'
@@ -150,9 +159,15 @@ Every semantic write returns separate categories:
 - recall contains bounded historical context relevant to the operation.
 
 Never report a suggestion, recall result, generated view, or diagnostic as a
-committed fact. Use --preview or the raw preview command before uncertain
-writes. Apply raw EpistemicDelta only when a high-level operation cannot express
-the intended semantics.
+committed fact. Use update --preview or --preview on a convenience command
+before uncertain writes. Use a raw EpistemicDelta only when a convenience
+operation cannot express the intended semantics.
+
+Every durable epistemic entity has a canonical annotation with required
+subject and predicate fields and optional scope. Do not require or synthesize a
+second descriptive name. Use intrinsic_name only when the entity naturally has
+one, and extended_annotation only for concise presentation nuance. Keep
+provenance, derived state, and relation rationale structurally separate.
 
 ## Reasoning Rules
 
@@ -187,6 +202,14 @@ Artifact equality and evidence identity are also distinct. Exact stable identity
 may collapse duplicate artifact registrations. Similar text or bytes alone
 must never merge separate observations.
 
+Preserve structured provenance features and extensible typed references from
+entities to artifacts, tool events, and runs. Artifact/source locators may live
+outside the mission; materialized views must remain under .agent/views and are
+never provenance. Tool events are behavioral facts. A future adapter may
+promote a well-defined tool result to evidence only through a deterministic,
+explicit operation whose observation is entailed by that result. Never infer an
+interpretation merely because a tool event or artifact exists.
+
 ## Recall And Context
 
 Load bounded context at startup and resume:
@@ -194,36 +217,51 @@ Load bounded context at startup and resume:
 ~~~bash
 long-run-agent --root <run-directory> context
 long-run-agent --root <run-directory> context --since-generation <n>
-long-run-agent --root <run-directory> query changes-since --id <n>
-long-run-agent --root <run-directory> expand <entity-id> --representation structure
+long-run-agent --root <run-directory> search '<structured terms>'
+long-run-agent --root <run-directory> inspect <entity-id> --why
+long-run-agent --root <run-directory> inspect --changes-since <n>
+long-run-agent --root <run-directory> inspect --unknowns
 ~~~
 
 Context is divided into WorkerScope and ActiveDelta. Respect completeness flags
 and continuation cursors; do not treat a truncated response as exhaustive.
 
+search returns compact deterministic candidates using canonical annotation,
+entity state, provenance/lineage, and graph relationship fields. inspect
+returns normalized nodes, stable-ID relations and paths, compact provenance
+references, and requested diagnostic/history facets. It must not recursively
+repeat entity payloads. The full current materialization for every entity is
+deterministically resolvable from its ID beneath .agent/views; normal responses
+omit that root and per-node paths.
+
 Automatic recall should provide compact capsules, not inject raw history.
 Selection maximizes marginal epistemic value: current-work relevance, material
 change, historical usefulness, and corrective value, less redundancy with both
-estimated current worker state and already selected representatives. Expand only
-the entities needed at the cheapest useful representation.
+estimated current worker state and already selected representatives.
 
 The worker-state estimate has independent content coverage, salience,
 structural coverage, and recency dimensions. It estimates information plausibly
 available to this worker; it does not reproduce a literal model context window.
-A surfaced capsule adds weak content coverage and recent salience. Expansion
-adds strong content coverage. Later reference adds high salience. Structural use
-adds structural coverage without implying full content coverage. Query it with:
+A surfaced capsule adds weak content coverage and recent salience. An
+independently recorded content-read event adds strong content coverage.
+Later reference adds high salience. Structural use adds structural coverage
+without implying full content coverage. Inspect it with:
 
 ~~~bash
-long-run-agent --root <run-directory> query worker-state --id <entity-id>
+long-run-agent --root <run-directory> inspect <entity-id> --worker-state
 ~~~
+
+View availability is not surface, read, reference, or structural use. Do not
+record content exposure merely because a view exists or inspect returned its
+canonical annotation. Actual host file-consumption tracking is deferred to the
+RunTrajectory/heat milestone.
 
 Treat current coverage as the initial selected set for representative recall.
 This suppresses an immediately repeated, unchanged capsule through ordinary
 redundancy scoring. Material epistemic changes override inhibition. Do not add a
 separate next-call blacklist.
 
-Retrieval outcomes are separate telemetry. Infer expansion, later reference,
+Retrieval outcomes are separate telemetry. Infer content read, later reference,
 structural use, and accepted relation suggestions as positive outcomes after the
 behavior occurs. Lack of use is neutral. Negative feedback must be explicit and
 contextual:
@@ -235,7 +273,7 @@ long-run-agent --root <run-directory> feedback <suggestion-id> --action rejected
 ~~~
 
 Accepting a relation suggestion creates a normal semantic transaction.
-Dismissal before expansion is weak; dismissal after expansion is strong. Neither
+Dismissal before content read is weak; dismissal after content read is strong. Neither
 globally demotes the entity. Rejection or dismissal changes retrieval behavior
 only for its retrieval context.
 
@@ -262,7 +300,7 @@ and generated_by need no rationale by default. Semantic relations may carry
 structured basis references and a concise rationale. Revise misleading relation
 rationale through append-only annotation operations so normal presentation uses
 the latest wording while audit history preserves the original. Offer annotation
-revision only when the entity or relation is already expanded, referenced,
+revision only when the entity or relation is already inspected, referenced,
 structurally active, diagnostic-relevant, or on a corrective path. Never scan
 cold history just to improve labels.
 

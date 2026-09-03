@@ -106,6 +106,47 @@ class SkillCallTrackerTests(unittest.TestCase):
                 "run_tracker_test", str(block["fields"]["worker/run/session"])
             )
 
+    def test_new_public_mcp_surfaces_are_tracked_by_operation_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server, _ = self.mcp()
+            server.handlers["mission_init"](tmp, "Tracked public surface")
+            server.handlers["mission_start"](
+                tmp, "Tracked public surface", run_id="run_public_surface"
+            )
+            updated = server.handlers["mission_update"](
+                tmp,
+                {
+                    "operations": [
+                        {
+                            "type": "evidence.registered",
+                            "data": {
+                                "id": "tracked_evidence",
+                                "annotation": {
+                                    "subject": "Tracked call",
+                                    "predicate": "records the public surface",
+                                },
+                            },
+                        }
+                    ]
+                },
+            )
+            searched = server.handlers["mission_search"](tmp, "Tracked call")
+            inspected = server.handlers["mission_inspect"](
+                tmp, "tracked_evidence"
+            )
+            self.assertEqual(updated["status"], "success")
+            self.assertEqual(searched["status"], "success")
+            self.assertEqual(inspected["status"], "success")
+
+            blocks = parse_blocks(tracker_log_path(tmp).read_text(encoding="utf-8"))
+            self.assertEqual(
+                [item["fields"]["operation"] for item in blocks[-3:]],
+                ["mission_update", "mission_search", "mission_inspect"],
+            )
+            self.assertTrue(
+                all(item["fields"]["status"] == "success" for item in blocks[-3:])
+            )
+
     def test_cli_logs_exact_argv_and_surfaced_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             argv = [

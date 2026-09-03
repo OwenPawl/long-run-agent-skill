@@ -11,23 +11,35 @@ class CorrectiveRecallRefinementTests(MissionCase):
         self.compiler.assert_claim(
             {
                 "id": "C4",
-                "name": "Initializer always preserves receiver identity",
+                "annotation": {
+                    "subject": "Initializer",
+                    "predicate": "always preserves receiver identity",
+                },
                 "proposition": "Initializer always preserves receiver identity.",
-                "subject": "initializer",
                 "premises": [evidence_ref("E17")],
                 "warrant": {"statement": "receiver-identity warrant"},
                 "argument_id": "A7",
+                "argument_annotation": {
+                    "subject": "Receiver-identity observation",
+                    "predicate": "warrants identity preservation",
+                },
             }
         )
         self.compiler.assert_claim(
             {
                 "id": "C8",
-                "name": "Initializer may replace receiver identity",
+                "annotation": {
+                    "subject": "Initializer",
+                    "predicate": "may replace receiver identity",
+                },
                 "proposition": "Initializer may replace receiver identity.",
-                "subject": "initializer",
                 "premises": [evidence_ref("E17")],
                 "warrant": {"statement": "replacement-trace warrant"},
                 "argument_id": "A8",
+                "argument_annotation": {
+                    "subject": "Replacement trace",
+                    "predicate": "warrants receiver replacement",
+                },
             }
         )
         self.compiler.apply(
@@ -78,12 +90,18 @@ class CorrectiveRecallRefinementTests(MissionCase):
         write = self.compiler.assert_claim(
             {
                 "id": "C31",
-                "name": "Current initializer reasoning",
+                "annotation": {
+                    "subject": "Initializer",
+                    "predicate": "revisits receiver identity reasoning",
+                },
                 "proposition": "Current reasoning revisits receiver identity.",
-                "subject": "initializer",
                 "premises": [evidence_ref("E17")],
                 "warrant": {"statement": "receiver-identity warrant"},
                 "argument_id": "A31",
+                "argument_annotation": {
+                    "subject": "Current receiver-identity observation",
+                    "predicate": "reuses the historical preservation warrant",
+                },
             }
         )
         capsule = next(
@@ -93,12 +111,18 @@ class CorrectiveRecallRefinementTests(MissionCase):
         self.assertTrue(capsule["historical_noncurrent"])
         self.assertEqual(capsule["current_state"], "SUPERSEDED")
         self.assertTrue(capsule["obsolete_content_guard"])
-        self.assertTrue(capsule["description"].startswith("Prior claim:"))
+        self.assertEqual(
+            capsule["annotation"],
+            {
+                "subject": "Initializer",
+                "predicate": "always preserves receiver identity",
+            },
+        )
         self.assertIn("historical correction", " ".join(capsule["why_relevant_now"]))
         self.assertIn("invalidated", capsule["why_no_longer_current"])
         self.assertEqual(capsule["decisive_path"][0]["id"], "R_supersession")
         self.assertEqual(capsule["current_successor"]["id"], "C8")
-        self.assertIn("[SUPERSEDED]", capsule["name"])
+        self.assertNotIn("name", capsule)
         context = self.compiler.context(max_entities=50, max_chars=30000)
         self.assertFalse(
             any(
@@ -113,7 +137,9 @@ class CorrectiveRecallRefinementTests(MissionCase):
             if item.get("section") == "historical_recall"
             and item.get("entity_id") == "C4"
         )
-        self.assertIn("[SUPERSEDED]", historical["name"])
+        self.assertEqual(historical["current_state"], "SUPERSEDED")
+        self.assertEqual(historical["annotation"], capsule["annotation"])
+        self.assertNotIn("name", historical)
 
     def test_recall_is_novel_relative_to_current_state_and_remains_diverse(self) -> None:
         self.evidence("shared_root", subject="feature")

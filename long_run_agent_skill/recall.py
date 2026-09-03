@@ -7,7 +7,9 @@ from collections import Counter
 from difflib import SequenceMatcher
 from typing import Any
 
+from .annotations import canonical_annotation
 from .graph import correlation_reasons
+from .provenance import evidence_roots
 from .util import bounded_text, stable_id
 from .worker_state import (
     ENTITY_COLLECTIONS,
@@ -43,7 +45,7 @@ def entity_catalog(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def _entity_roots(entity: dict[str, Any], state: dict[str, Any]) -> set[str]:
     entity_type = entity.get("entity_type")
     if entity_type == "evidence":
-        return {entity["id"]}
+        return evidence_roots(entity["id"], state.get("evidence", {}))
     if entity_type == "claim":
         derived = entity.get("derived", {})
         roots = set(derived.get("root_evidence", []))
@@ -146,28 +148,9 @@ def _measurement_patterns(
 
 
 def _subject(entity: dict[str, Any]) -> str:
-    return str(entity.get("subject", "")).strip().lower()
-
-
-def _name(entity: dict[str, Any]) -> str:
-    return str(
-        entity.get("name")
-        or entity.get("proposition")
-        or entity.get("question")
-        or entity.get("choice")
-        or entity.get("description")
-        or entity.get("id")
-    )
-
-
-def _description(entity: dict[str, Any]) -> str:
-    return str(
-        entity.get("description")
-        or entity.get("proposition")
-        or entity.get("question")
-        or entity.get("choice")
-        or ""
-    )
+    return canonical_annotation(
+        entity, entity.get("entity_type", "entity")
+    )["subject"].lower()
 
 
 def _derived_state(entity: dict[str, Any]) -> str:
@@ -614,28 +597,17 @@ def recall(
     for rank, item in enumerate(selected, 1):
         entity = item["entity"]
         correction = item["correction"]
-        raw_description = _description(entity)
+        annotation = canonical_annotation(entity, item["entity_type"])
         if item["role"] == "corrective":
-            name = (
-                f"Historical correction - {_name(entity)} "
-                f"[{correction['badge']}]"
-            )
-            raw_description = f"Prior {entity['entity_type']}: {raw_description}"
             current_state = correction["badge"]
         else:
-            name = _name(entity)
             current_state = _derived_state(entity)
-        description, complete = bounded_text(
-            raw_description, settings["capsule_description_chars"]
-        )
         capsule = {
             "entity_id": item["entity_id"],
             "entity_type": item["entity_type"],
             "role": item["role"],
             "historical_noncurrent": item["role"] == "corrective",
-            "name": name,
-            "description": description,
-            "description_complete": complete,
+            "annotation": annotation,
             "current_state": current_state,
             "why_relevant": item["reasons"],
             "why_relevant_now": item["reasons"],
@@ -651,12 +623,19 @@ def recall(
             },
             "historical_generation": entity.get("generation", 0),
             "reference": {
-                "action": "expand",
+                "action": "inspect",
                 "entity_id": item["entity_id"],
             },
             "rank": rank,
             "score": item["score"],
         }
+        if entity.get("extended_annotation"):
+            extended, extended_complete = bounded_text(
+                str(entity["extended_annotation"]),
+                settings["capsule_description_chars"],
+            )
+            capsule["extended_annotation"] = extended
+            capsule["extended_annotation_complete"] = extended_complete
         if item["role"] == "corrective":
             capsule.update(
                 {
@@ -753,7 +732,7 @@ def relation_suggestions(
                     {
                         "type": "feature",
                         "name": "same_subject",
-                        "value": claim.get("subject", ""),
+                        "value": canonical_annotation(claim, "claim")["subject"],
                     }
                 )
             body = {

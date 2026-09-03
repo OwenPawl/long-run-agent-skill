@@ -6,8 +6,11 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Any
 
+from .annotations import canonical_annotation, render_annotation, revise_annotation
 from .code_actions import normalize_diagnostics
+from .errors import SemanticError
 from .graph import strongly_connected_components, support_independence
+from .provenance import normalize_provenance_refs
 from .util import stable_id
 from .worker_state import derive_worker_state, operation_references
 
@@ -34,7 +37,12 @@ def _conclusion_key(conclusion: dict[str, Any]) -> tuple[str, str]:
 
 
 def _entity_label(entity: dict[str, Any], fallback: str) -> str:
-    return entity.get("name") or entity.get("description") or entity.get("proposition") or fallback
+    try:
+        return render_annotation(
+            canonical_annotation({**entity, "id": entity.get("id", fallback)}, "entity")
+        )
+    except SemanticError:
+        return fallback
 
 
 def _diagnostic(code: str, entity_ids: list[str], **details: Any) -> dict[str, Any]:
@@ -149,9 +157,22 @@ def _collect(operations: list[dict[str, Any]]) -> dict[str, Any]:
             model["retrieval_events"].append(event)
             for entity_id in data.get("entity_ids", []):
                 attention = model["attention"].setdefault(entity_id, {})
-                signal = kind.removeprefix("retrieval.")
+                raw_signal = kind.removeprefix("retrieval.")
+                signal = (
+                    "surfaced"
+                    if raw_signal
+                    in {"search_result_surfaced", "inspect_topology_surfaced"}
+                    else raw_signal
+                )
+                attention[f"last_{raw_signal}_generation"] = data["generation"]
+                attention[f"{raw_signal}_count"] = (
+                    attention.get(f"{raw_signal}_count", 0) + 1
+                )
                 attention[f"last_{signal}_generation"] = data["generation"]
-                attention[f"{signal}_count"] = attention.get(f"{signal}_count", 0) + 1
+                if signal != raw_signal:
+                    attention[f"{signal}_count"] = (
+                        attention.get(f"{signal}_count", 0) + 1
+                    )
                 if signal == "surfaced":
                     material = data.get("entity_states", {}).get(entity_id)
                     if material is not None:
@@ -194,6 +215,7 @@ def _collect(operations: list[dict[str, Any]]) -> dict[str, Any]:
         "arguments": "argument",
         "attacks": "attack",
         "dependencies": "dependency",
+        "verifications": "verification",
         "questions": "question",
         "decisions": "decision",
         "warrants": "warrant",
@@ -202,13 +224,25 @@ def _collect(operations: list[dict[str, Any]]) -> dict[str, Any]:
     for collection, entity_type in annotation_types.items():
         for entity_id, entity in model[collection].items():
             annotation = model["annotations"].get(f"{entity_type}:{entity_id}")
+            current_annotation = canonical_annotation(entity, entity_type)
             if annotation:
+                revision = dict(annotation)
+                if "annotation" not in revision and (
+                    revision.get("name") or revision.get("description")
+                ):
+                    legacy_update = {}
+                    if revision.get("name"):
+                        legacy_update["subject"] = revision["name"]
+                    if revision.get("description"):
+                        legacy_update["predicate"] = revision["description"]
+                    revision["annotation"] = legacy_update
+                entity["annotation"] = revise_annotation(current_annotation, revision)
                 entity.update(
                     {
                         key: annotation[key]
                         for key in (
-                            "name",
-                            "description",
+                            "intrinsic_name",
+                            "extended_annotation",
                             "aliases",
                             "tags",
                             "rationale",
@@ -216,6 +250,11 @@ def _collect(operations: list[dict[str, Any]]) -> dict[str, Any]:
                         if key in annotation
                     }
                 )
+            else:
+                entity["annotation"] = current_annotation
+            provenance_refs = normalize_provenance_refs(entity)
+            if provenance_refs:
+                entity["provenance_refs"] = provenance_refs
     return model
 
 

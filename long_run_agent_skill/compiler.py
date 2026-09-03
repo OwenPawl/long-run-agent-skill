@@ -8,15 +8,17 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from .annotations import canonical_annotation, revise_annotation
 from .code_actions import annotation_revision_opportunities
 from .context import ContextQueryMixin
 from .errors import LedgerError, SemanticError
 from .recall import entity_catalog, operation_entity_ids, recall, relation_suggestions
 from .reducer import reduce_operations
+from .provenance import normalize_provenance_refs
 from .store import GENESIS_HASH, LedgerStore
 from .util import atomic_write_json, random_id, stable_id, utc_now
 from .views import sqlite_metadata, state_hash, write_views
-from .worker_state import material_state, operation_references
+from .worker_state import SURFACE_EVENT_TYPES, material_state, operation_references
 
 SUPPORTED_OPERATIONS = {
     "mission.started",
@@ -64,6 +66,26 @@ ENTITY_COLLECTION = {
     "warrant": "warrants",
     "relation": "relations",
     "suggestion": "suggestions",
+}
+
+EVENT_ENTITY_TYPE = {
+    "artifact.registered": "artifact",
+    "evidence.registered": "evidence",
+    "verification.recorded": "verification",
+    "claim.asserted": "claim",
+    "claim.revised": "claim",
+    "assumption.asserted": "assumption",
+    "assumption.revised": "assumption",
+    "argument.asserted": "argument",
+    "attack.asserted": "attack",
+    "dependency.observed": "dependency",
+    "question.opened": "question",
+    "question.updated": "question",
+    "question.reopened": "question",
+    "decision.recorded": "decision",
+    "decision.revised": "decision",
+    "warrant.registered": "warrant",
+    "relation.asserted": "relation",
 }
 
 
@@ -155,25 +177,28 @@ class EpistemicCompiler(ContextQueryMixin):
         warrant = payload.pop("warrant", {})
         argument_id = payload.pop("argument_id", "")
         argument_name = payload.pop("argument_name", "")
+        argument_annotation = payload.pop("argument_annotation", None)
         polarity = payload.pop("polarity", "support")
         if not payload.get("proposition"):
             raise SemanticError("claim proposition is required")
         payload.setdefault("id", random_id("claim"))
-        payload.setdefault("name", payload["proposition"])
-        payload.setdefault("description", payload["proposition"])
         payload.setdefault("commitment", "asserted")
         operations = [operation("claim.asserted", **payload)]
         if premises:
             argument_data = {
                 "id": argument_id,
-                "name": argument_name or f"Argument for {payload['name']}",
                 "premises": premises,
                 "assumptions": assumptions,
                 "dependencies": dependencies,
                 "warrant": warrant,
                 "conclusion": {"type": "claim", "id": payload["id"], "polarity": polarity},
-                "subject": payload.get("subject", ""),
+                "subject": payload.get("subject", "")
+                or payload.get("annotation", {}).get("subject", ""),
             }
+            if argument_name:
+                argument_data["name"] = argument_name
+            if argument_annotation is not None:
+                argument_data["annotation"] = argument_annotation
             operations.append(operation("argument.asserted", **argument_data))
         delta = {"operations": operations}
         return self.preview(delta) if preview else self.apply(delta)
@@ -183,8 +208,6 @@ class EpistemicCompiler(ContextQueryMixin):
         if not payload.get("proposition"):
             raise SemanticError("assumption proposition is required")
         payload.setdefault("id", random_id("assumption"))
-        payload.setdefault("name", payload["proposition"])
-        payload.setdefault("description", payload["proposition"])
         payload.setdefault("commitment", "accepted")
         delta = {"operations": [operation("assumption.asserted", **payload)]}
         return self.preview(delta) if preview else self.apply(delta)
@@ -202,7 +225,6 @@ class EpistemicCompiler(ContextQueryMixin):
         if not payload.get("question"):
             raise SemanticError("question text is required")
         payload.setdefault("id", random_id("question"))
-        payload.setdefault("name", payload["question"])
         delta = {"operations": [operation("question.opened", **payload)]}
         return self.preview(delta) if preview else self.apply(delta)
 
@@ -211,7 +233,6 @@ class EpistemicCompiler(ContextQueryMixin):
         if not payload.get("choice"):
             raise SemanticError("decision choice is required")
         payload.setdefault("id", random_id("decision"))
-        payload.setdefault("name", payload["choice"])
         payload.setdefault("timestamp", utc_now())
         delta = {"operations": [operation("decision.recorded", **payload)]}
         return self.preview(delta) if preview else self.apply(delta)
@@ -237,6 +258,17 @@ class EpistemicCompiler(ContextQueryMixin):
             data = item.setdefault("data", {})
             if not isinstance(data, dict):
                 raise SemanticError("operation data must be an object")
+            entity_type = EVENT_ENTITY_TYPE.get(item["type"])
+            if entity_type:
+                existing = state.get(ENTITY_COLLECTION[entity_type], {}).get(
+                    data.get("id", ""), {}
+                )
+                if "annotation" not in data and existing.get("annotation"):
+                    data["annotation"] = existing["annotation"]
+                data["annotation"] = canonical_annotation(data, entity_type)
+                provenance_refs = normalize_provenance_refs(data)
+                if provenance_refs:
+                    data["provenance_refs"] = provenance_refs
             if item["type"] == "artifact.registered" and data.get("content_hash") in artifact_by_hash:
                 canonical_id = artifact_by_hash[data["content_hash"]]
                 aliases[data.get("id", canonical_id)] = canonical_id
@@ -294,6 +326,9 @@ class EpistemicCompiler(ContextQueryMixin):
                 rewrite_reference(reference)
             for reference in data.get("basis", []):
                 if isinstance(reference, dict) and reference.get("type") != "feature":
+                    rewrite_reference(reference)
+            for reference in data.get("provenance_refs", []):
+                if reference.get("type") == "artifact":
                     rewrite_reference(reference)
             if isinstance(data.get("target"), dict):
                 rewrite_reference(data["target"])
@@ -389,6 +424,11 @@ class EpistemicCompiler(ContextQueryMixin):
             if isinstance(data.get("artifact_ref"), dict):
                 references.append({"type": "artifact", "id": data["artifact_ref"].get("id", "")})
             references.extend(
+                {"type": "artifact", "id": reference.get("id", "")}
+                for reference in data.get("provenance_refs", [])
+                if reference.get("type") == "artifact"
+            )
+            references.extend(
                 {"type": "assumption", "id": assumption.get("assumption_id", "")}
                 for assumption in data.get("assumptions", [])
             )
@@ -424,6 +464,12 @@ class EpistemicCompiler(ContextQueryMixin):
                     raise SemanticError(
                         f"cannot annotate missing {entity_type or 'unknown'} entity: {entity_id}"
                     )
+                if "annotation" in data:
+                    current_entity = state.get(
+                        ENTITY_COLLECTION[entity_type], {}
+                    ).get(entity_id, {"id": entity_id})
+                    current = canonical_annotation(current_entity, entity_type)
+                    data["annotation"] = revise_annotation(current, data)
             if item["type"] in {
                 "claim.withdrawn",
                 "assumption.withdrawn",
@@ -514,6 +560,19 @@ class EpistemicCompiler(ContextQueryMixin):
             self._changes(old_state, new_state),
         )
 
+    def update(
+        self,
+        delta: dict[str, Any],
+        *,
+        preview: bool = False,
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Compile semantic input through the ordinary EpistemicDelta boundary."""
+
+        if preview:
+            return self.preview(delta)
+        return self.apply(delta, expected_generation=expected_generation)
+
     def preview(self, delta: dict[str, Any]) -> dict[str, Any]:
         old_state = self.state()
         head = self.store.ledger_head()
@@ -584,7 +643,7 @@ class EpistemicCompiler(ContextQueryMixin):
         surfaced_ids = {
             entity_id
             for event in old_state.get("retrieval_events", [])
-            if event.get("event") == "retrieval.surfaced"
+            if event.get("event") in SURFACE_EVENT_TYPES
             for entity_id in event.get("entity_ids", [])
         }
         referenced, structural = operation_references(prepared)
@@ -593,7 +652,7 @@ class EpistemicCompiler(ContextQueryMixin):
         use_sources: dict[str, str] = {}
         latest_surface: dict[str, str] = {}
         for event in old_state.get("retrieval_events", []):
-            if event.get("event") == "retrieval.surfaced":
+            if event.get("event") in SURFACE_EVENT_TYPES:
                 for entity_id in event.get("entity_ids", []):
                     latest_surface[entity_id] = event.get("id", "")
         for entity_id in referenced:

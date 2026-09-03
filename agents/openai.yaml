@@ -1,7 +1,7 @@
 interface:
   display_name: "Long Run Agent"
   short_description: "Steer one durable worker with an epistemic compiler"
-  default_prompt: "Use $long-run-agent to run this task through one worker, the .agent/live.md control plane, and the standalone epistemic compiler. Preserve committed semantics, derived consequences, diagnostics, suggestions, and recall as distinct results."
+  default_prompt: "Use $long-run-agent to run this task through one worker, the .agent/live.md control plane, and the standalone epistemic compiler. Use update/search/inspect as the conceptual epistemic surface, and preserve committed semantics, derived consequences, diagnostics, suggestions, and recall as distinct results."
 
 commands:
   mcp_server: "long-run-agent-mcp"

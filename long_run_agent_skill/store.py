@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,7 @@ class AgentPaths:
     ledger: Path
     retrieval: Path
     policy: Path
+    views: Path
     state: Path
     current: Path
     checkpoint: Path
@@ -58,6 +60,7 @@ class AgentPaths:
     def for_root(cls, root: str | Path) -> "AgentPaths":
         resolved = Path(root).expanduser().resolve()
         agent = resolved / ".agent"
+        views = agent / "views"
         return cls(
             root=resolved,
             agent=agent,
@@ -65,8 +68,9 @@ class AgentPaths:
             ledger=agent / "ledger.jsonl",
             retrieval=agent / "retrieval.jsonl",
             policy=agent / "policy.json",
-            state=agent / "state.sqlite",
-            current=agent / "current.md",
+            views=views,
+            state=views / "state.sqlite",
+            current=views / "current.md",
             checkpoint=agent / "checkpoint.json",
             archive=agent / "archive",
         )
@@ -81,6 +85,7 @@ class LedgerStore:
         paths.agent.mkdir(parents=True, exist_ok=True)
         paths.archive.mkdir(parents=True, exist_ok=True)
         if force:
+            shutil.rmtree(paths.views, ignore_errors=True)
             paths.ledger.unlink(missing_ok=True)
             paths.retrieval.unlink(missing_ok=True)
             paths.state.unlink(missing_ok=True)

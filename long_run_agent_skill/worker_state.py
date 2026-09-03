@@ -22,6 +22,12 @@ ENTITY_COLLECTIONS = {
     "relation": "relations",
 }
 
+SURFACE_EVENT_TYPES = {
+    "retrieval.surfaced",
+    "retrieval.search_result_surfaced",
+    "retrieval.inspect_topology_surfaced",
+}
+
 
 def operation_references(
     operations: list[dict[str, Any]],

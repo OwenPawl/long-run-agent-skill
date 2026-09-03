@@ -86,10 +86,13 @@ class RetrievalAndContextTests(MissionCase):
         dismissal = self.compiler.state()["retrieval_events"][-1]
         self.assertEqual(dismissal["context_key"], surfaced["context_key"])
         self.assertEqual(dismissal["entity_ids"], ["historical_observation"])
-        search = self.compiler.query("search", text="historical observation")
-        self.assertIn("historical_observation", {item["entity_id"] for item in search["result"]})
+        search = self.compiler.search("historical observation")
+        self.assertIn(
+            "historical_observation",
+            {item["entity_id"] for item in search["results"]},
+        )
 
-    def test_bounded_context_and_query_have_explicit_continuations(self) -> None:
+    def test_bounded_context_and_inspect_have_explicit_continuations(self) -> None:
         for index in range(8):
             self.evidence(f"e{index}")
             self.claim(f"c{index}", [f"e{index}"], argument_id=f"a{index}")
@@ -104,21 +107,28 @@ class RetrievalAndContextTests(MissionCase):
             {item.get("entity_id") for item in first["entries"]},
             {item.get("entity_id") for item in second["entries"]},
         )
-        query = self.compiler.query("history", "c0", limit=1)
-        self.assertFalse(query["complete"] if len(self.compiler.query("history", "c0")["result"]) > 1 else True)
-        unknowns = self.compiler.query("unknowns", limit=1)
+        history = self.compiler.inspect("c0", facets=["history"], limit=1)
+        self.assertFalse(history["complete"])
+        continued_history = self.compiler.inspect(
+            "c0", facets=["history"], limit=1, cursor=history["continuation"]
+        )
+        self.assertNotEqual(history["history"], continued_history["history"])
+        unknowns = self.compiler.inspect(facets=["unknowns"], limit=1)
         self.assertFalse(unknowns["complete"])
         self.assertTrue(unknowns["continuation"])
-        continued = self.compiler.query(
-            "unknowns", limit=1, cursor=unknowns["continuation"]
+        continued = self.compiler.inspect(
+            facets=["unknowns"], limit=1, cursor=unknowns["continuation"]
         )
-        self.assertNotEqual(unknowns["result"], continued["result"])
+        self.assertNotEqual(
+            unknowns["groups"]["unknowns"],
+            continued["groups"]["unknowns"],
+        )
 
     def test_retrieval_telemetry_survives_derived_state_deletion(self) -> None:
         self.evidence("searchable_evidence", subject="uncommon-keyword")
-        self.compiler.query("search", text="uncommon-keyword")
+        self.compiler.search("uncommon-keyword")
         self.compiler.context(max_entities=1, max_chars=1000)
-        metrics = self.compiler.query("telemetry")["result"]
+        metrics = self.compiler.inspect(facets=["telemetry"])["groups"]["telemetry"]
         self.assertEqual(metrics["agent_maintenance"]["manual_searches"], 1)
         self.assertEqual(metrics["context_efficiency"]["context_packs"], 1)
         self.assertEqual(metrics["context_efficiency"]["raw_evidence_avoided"], 1)
@@ -127,19 +137,19 @@ class RetrievalAndContextTests(MissionCase):
         )
         telemetry_path = self.root / ".agent" / "retrieval.jsonl"
         before = telemetry_path.read_text(encoding="utf-8")
-        Path(self.root, ".agent", "state.sqlite").unlink()
+        Path(self.root, ".agent", "views", "state.sqlite").unlink()
         rebuilt = self.compiler.rebuild()
         after = telemetry_path.read_text(encoding="utf-8")
         self.assertEqual(before, after)
         self.assertEqual(rebuilt["model_calls"], 0)
         self.assertTrue(self.compiler.state()["retrieval_events"])
-        rebuilt_metrics = self.compiler.query("telemetry")["result"]
+        rebuilt_metrics = self.compiler.inspect(facets=["telemetry"])["groups"]["telemetry"]
         self.assertEqual(rebuilt_metrics["agent_maintenance"]["manual_searches"], 1)
 
     def test_annotations_are_revisable_without_overwriting_semantic_history(self) -> None:
         self.evidence("annotated")
         first_generation = self.compiler.store.ledger_head()["generation"]
-        self.compiler.apply(
+        self.compiler.update(
             {
                 "operations": [
                     operation(
@@ -147,18 +157,26 @@ class RetrievalAndContextTests(MissionCase):
                         id="annotation_1",
                         entity_type="evidence",
                         entity_id="annotated",
-                        name="Runtime trace recording return identity",
-                        description="A runtime observation of the returned object identity",
+                        annotation={
+                            "subject": "Runtime trace",
+                            "predicate": "records returned-object identity",
+                        },
+                        extended_annotation=(
+                            "A runtime observation of the returned object identity."
+                        ),
                         reason="Make the label descriptive rather than adjudicative",
                     )
                 ]
             }
         )
         self.assertEqual(
-            self.compiler.state()["evidence"]["annotated"]["name"],
-            "Runtime trace recording return identity",
+            self.compiler.state()["evidence"]["annotated"]["annotation"],
+            {
+                "subject": "Runtime trace",
+                "predicate": "records returned-object identity",
+            },
         )
         self.assertGreater(self.compiler.store.ledger_head()["generation"], first_generation)
-        history = self.compiler.query("history", "annotated")["result"]
+        history = self.compiler.inspect("annotated", facets=["history"])["history"]
         self.assertTrue(any(item["type"] == "evidence.registered" for item in history))
         self.assertTrue(any(item["type"] == "annotation.revised" for item in history))

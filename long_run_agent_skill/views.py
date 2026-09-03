@@ -9,6 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .annotations import canonical_annotation, render_annotation
+from .materialized_views import materialize_entity_views
 from .recall import entity_catalog
 from .store import LedgerStore
 from .util import atomic_write_text, canonical_json, sha256
@@ -31,17 +33,6 @@ def _entity_state(entity: dict[str, Any]) -> str:
     return entity.get("status", "current")
 
 
-def _entity_name(entity: dict[str, Any]) -> str:
-    return str(
-        entity.get("name")
-        or entity.get("proposition")
-        or entity.get("question")
-        or entity.get("choice")
-        or entity.get("description")
-        or entity.get("id")
-    )
-
-
 def write_sqlite(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -55,9 +46,11 @@ def write_sqlite(path: Path, state: dict[str, Any]) -> None:
             CREATE TABLE entities (
                 id TEXT PRIMARY KEY,
                 type TEXT NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL,
                 subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                intrinsic_name TEXT NOT NULL,
+                extended_annotation TEXT NOT NULL,
                 derived_state TEXT NOT NULL,
                 generation INTEGER NOT NULL,
                 payload_json TEXT NOT NULL
@@ -83,19 +76,22 @@ def write_sqlite(path: Path, state: dict[str, Any]) -> None:
         catalog = entity_catalog(state)
         rows = []
         for entity_id, entity in sorted(catalog.items()):
+            annotation = canonical_annotation(entity, entity["entity_type"])
             rows.append(
                 (
                     entity_id,
                     entity["entity_type"],
-                    _entity_name(entity),
-                    str(entity.get("description") or entity.get("proposition") or ""),
-                    str(entity.get("subject", "")),
+                    annotation["subject"],
+                    annotation["predicate"],
+                    annotation.get("scope", ""),
+                    str(entity.get("intrinsic_name", "")),
+                    str(entity.get("extended_annotation", "")),
                     _entity_state(entity),
                     int(entity.get("generation", 0)),
                     canonical_json(entity),
                 )
             )
-        connection.executemany("INSERT INTO entities VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        connection.executemany("INSERT INTO entities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
         connection.executemany(
             "INSERT INTO edges VALUES (:source, :relation, :target)", state.get("edges", [])
         )
@@ -134,11 +130,12 @@ def write_sqlite(path: Path, state: dict[str, Any]) -> None:
         connection.executemany("INSERT INTO metadata VALUES (?, ?)", sorted(metadata.items()))
         try:
             connection.execute(
-                "CREATE VIRTUAL TABLE entity_fts USING fts5(id UNINDEXED, name, description, subject)"
+                "CREATE VIRTUAL TABLE entity_fts USING fts5("
+                "id UNINDEXED, subject, predicate, scope, intrinsic_name, extended_annotation)"
             )
             connection.executemany(
-                "INSERT INTO entity_fts VALUES (?, ?, ?, ?)",
-                [(row[0], row[2], row[3], row[4]) for row in rows],
+                "INSERT INTO entity_fts VALUES (?, ?, ?, ?, ?, ?)",
+                [(row[0], row[2], row[3], row[4], row[5], row[6]) for row in rows],
             )
             connection.execute("INSERT INTO metadata VALUES ('fts_available', 'true')")
         except sqlite3.OperationalError:
@@ -176,7 +173,7 @@ def render_current(state: dict[str, Any]) -> str:
         if claim.get("commitment") == "withdrawn":
             continue
         derived = claim.get("derived", {})
-        label = _entity_name({**claim, "id": claim_id})
+        label = render_annotation(canonical_annotation(claim, "claim"))
         state_label = "/".join(
             filter(None, [derived.get("support_state"), derived.get("applicability_state")])
         )
@@ -192,7 +189,13 @@ def render_current(state: dict[str, Any]) -> str:
         if question.get("derived_status") not in {"resolved"}
     ]
     for question_id, question in open_questions:
-        lines.append(_bullet(_entity_name({**question, "id": question_id}), question_id, question.get("derived_status", "opened")))
+        lines.append(
+            _bullet(
+                render_annotation(canonical_annotation(question, "question")),
+                question_id,
+                question.get("derived_status", "opened"),
+            )
+        )
     if not open_questions:
         lines.append("- None recorded.")
 
@@ -200,7 +203,13 @@ def render_current(state: dict[str, Any]) -> str:
     decisions = state.get("decisions", {})
     for decision_id, decision in sorted(decisions.items()):
         status = "basis changed" if decision.get("basis_changed") else "current"
-        lines.append(_bullet(_entity_name({**decision, "id": decision_id}), decision_id, status))
+        lines.append(
+            _bullet(
+                render_annotation(canonical_annotation(decision, "decision")),
+                decision_id,
+                status,
+            )
+        )
     if not decisions:
         lines.append("- None recorded.")
 
@@ -229,13 +238,17 @@ def render_current(state: dict[str, Any]) -> str:
 
 
 def write_views(store: LedgerStore, state: dict[str, Any]) -> dict[str, Any]:
+    store.paths.views.mkdir(parents=True, exist_ok=True)
     write_sqlite(store.paths.state, state)
     atomic_write_text(store.paths.current, render_current(state))
+    entities = materialize_entity_views(store, state, entity_catalog(state))
+    for legacy in (store.paths.agent / "state.sqlite", store.paths.agent / "current.md"):
+        if legacy not in {store.paths.state, store.paths.current}:
+            legacy.unlink(missing_ok=True)
     return {
         "generation": state.get("generation", 0),
         "state_hash": state_hash(state),
-        "sqlite": str(store.paths.state),
-        "current": str(store.paths.current),
+        "materialized_views": entities,
     }
 
 

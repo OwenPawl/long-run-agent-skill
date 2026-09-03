@@ -37,17 +37,22 @@ Initialization creates this state beneath the selected mission root:
   retrieval.jsonl
   skill-calls.log
   policy.json
-  current.md
-  state.sqlite
   checkpoint.json
+  views/
+    current.md
+    state.sqlite
+    index.json
+    entities/<deterministic-id>.json
 ~~~
 
 ledger.jsonl is the hash-chained semantic authority. retrieval.jsonl is a
 separate hash-chained record of recall, suggestion, and feedback behavior;
 those records never become epistemic truth implicitly. policy.json controls
-bounded context, recall, and derivation. current.md and state.sqlite are
-generated views. checkpoint.json contains only verified pointers into durable
-state. live.md remains the sole user steering and control file. skill-calls.log
+bounded context, recall, and derivation. Everything under views/ is disposable
+and rebuilt offline. An entity ID deterministically resolves through the view
+index to its current full representation; normal search and inspect responses
+do not repeat view paths. checkpoint.json contains only verified pointers into
+durable state. live.md remains the sole user steering and control file. skill-calls.log
 is passive operational observability: it records exact public requests and
 surfaced responses but is never replayed as semantic authority or retrieval
 telemetry.
@@ -108,19 +113,33 @@ the same library:
 ~~~bash
 python3 scripts/mission_harness.py --root /tmp/mission init --goal "verify the release"
 python3 scripts/mission_harness.py --root /tmp/mission start --goal "verify the release"
-python3 scripts/mission_harness.py --root /tmp/mission observe artifact --data '{"id":"artifact:test","locator":"/tmp/result.txt"}'
-python3 scripts/mission_harness.py --root /tmp/mission observe evidence --data '{"id":"evidence:test","artifact_ref":{"id":"artifact:test"},"description":"tests passed","producer":"test runner","source_run":"release"}'
-python3 scripts/mission_harness.py --root /tmp/mission assert --data '{"id":"claim:release","proposition":"release is verified","premises":[{"type":"evidence","id":"evidence:test"}],"warrant":{"statement":"passing tests warrant release verification"},"argument_id":"argument:release"}'
-python3 scripts/mission_harness.py --root /tmp/mission query belief --id claim:release
+python3 scripts/mission_harness.py --root /tmp/mission update --data '{"operations":[{"type":"artifact.registered","data":{"id":"artifact:test","annotation":{"subject":"Release log","predicate":"records test output"},"external_identity":"/tmp/result.txt"}},{"type":"evidence.registered","data":{"id":"evidence:test","annotation":{"subject":"Release suite","predicate":"passed all checks","scope":"run release"},"provenance_refs":[{"type":"artifact","id":"artifact:test"},{"type":"tool_event","id":"test-command-1"},{"type":"run","id":"release"}],"producer":"test runner"}}]}'
+python3 scripts/mission_harness.py --root /tmp/mission assert --data '{"id":"claim:release","annotation":{"subject":"Release","predicate":"is verified"},"proposition":"release is verified","premises":[{"type":"evidence","id":"evidence:test"}],"warrant":{"statement":"passing tests warrant release verification"},"argument_id":"argument:release","argument_annotation":{"subject":"Passing release tests","predicate":"warrant release verification"}}'
+python3 scripts/mission_harness.py --root /tmp/mission search "release verification"
+python3 scripts/mission_harness.py --root /tmp/mission inspect claim:release --why
 python3 scripts/mission_harness.py --root /tmp/mission checkpoint
 python3 scripts/mission_harness.py --root /tmp/mission validate
 ~~~
 
-Use --preview on semantic helper commands, or the raw preview command, to inspect
-consequences without changing either ledger. Raw apply accepts an
-EpistemicDelta JSON object and an optional generation precondition.
+Use --preview on update or a semantic helper command to inspect consequences
+without changing either ledger. update accepts an EpistemicDelta JSON object
+and an optional generation precondition.
 
-## Semantic Operations
+## Public Interaction
+
+The conceptual epistemic surface is update, search, and inspect. update is the
+single semantic compiler boundary. Automatic recall is part of qualifying
+update responses. search discovers a broader deterministic candidate landscape
+from structured annotations, state, provenance, and graph relationships.
+inspect navigates normalized nodes, relations, paths, diagnostics, and bounded
+history without recursively embedding full entity payloads.
+
+Canonical entity annotations contain required subject and predicate fields and
+an optional scope. intrinsic_name is reserved for entities with a natural name;
+extended_annotation adds bounded presentation nuance. Neither provenance nor
+derived state is folded into annotation text.
+
+Convenience operations compile into update:
 
 - observe records artifacts, evidence observations, dependency versions, and
   verification results without conflating their identities.
@@ -135,11 +154,22 @@ EpistemicDelta JSON object and an optional generation precondition.
   relation suggestion.
 - close records the outcome and next actions without discarding history.
 
-Queries cover belief, why, why-not, defeaters, assumptions, impact, unknowns,
-history, changes-since, revalidate, search, telemetry, and worker-state. context
+inspect facets cover why, why-not, defeaters, assumptions, impact, unknowns,
+history, changes-since, revalidation, telemetry, and worker-state. context
 returns bounded WorkerScope and ActiveDelta sections with explicit completeness
-and continuation metadata. expand retrieves the cheapest useful representation
-of one entity.
+and continuation metadata. Full entity state is always available through the
+deterministic mission-local view for its ID, but view availability never implies
+that its content was read.
+
+Provenance uses structured features and extensible typed references. An entity
+may reference an artifact, a producing tool event, and a run independently.
+Artifact locators may legitimately point outside the mission; materialized views
+never do. This seam permits future file/tool activity to resolve through a
+provenance reference into an entity and graph region without treating views as
+source artifacts. Tool events are behavioral facts. A future adapter may
+deterministically promote a well-defined tool result into evidence only when the
+observation is entailed by that result; promotion must not invent a semantic
+interpretation.
 
 When evidence, assumptions, dependencies, or attacks change, the fixed-point
 reducer recomputes affected conclusions, questions, and decisions. Diagnostics
@@ -154,9 +184,11 @@ using relevance to current work, material change, historical usefulness,
 corrective value, current-state coverage, and correlation-aware representative
 diversity. Current worker state tracks content coverage, salience, structural
 coverage, and recency independently. A capsule contributes weak coverage;
-expansion contributes strong content coverage; references and structural use
-affect their own dimensions. Retrieval outcome telemetry remains a separate
-model rather than an ordinal proxy for containment.
+an independently recorded content-read event contributes strong content
+coverage; references and structural use affect their own dimensions. Retrieval
+outcome telemetry remains a separate model rather than an ordinal proxy for
+containment. The temporary worker-state model does not infer file consumption
+from materialized-view availability.
 
 Recently surfaced unchanged state is inhibited by the same coverage scoring.
 Material changes such as new defeaters, support loss, invalidated dependencies,
@@ -165,10 +197,10 @@ claims and evidence are excluded from constructive recall. When a matching old
 reasoning basis makes them corrective, the capsule inseparably carries its
 historical badge, correction reason, decisive path, and known successor.
 
-Expansion, later reference, structural use, and accepted relation suggestions
-produce inferred positive outcome telemetry. Dismissal before expansion is a
-weak contextual negative; dismissal after expansion is strong. Neither globally
-demotes the entity, and non-use is neutral.
+Content read, later reference, structural use, and accepted relation suggestions
+produce inferred positive outcome telemetry. Dismissal before content read is a
+weak contextual negative; dismissal after content read is strong. Neither
+globally demotes the entity, and non-use is neutral.
 
 Diagnostics expose non-authoritative code actions with levels, preconditions,
 expected consequences, semantic-input requirements, and a proposed
@@ -188,12 +220,12 @@ mission_start             mission_context
 mission_observe           mission_assert
 mission_assumption        mission_argument
 mission_attack            mission_ask
-mission_decide            mission_query
-mission_expand            mission_feedback
+mission_decide            mission_update
+mission_search            mission_inspect
+mission_feedback
 mission_checkpoint        mission_resume
 mission_close             mission_rebuild
-mission_validate          mission_preview
-mission_apply
+mission_validate
 ~~~
 
 Other MCP servers can register the same tool set with
@@ -229,7 +261,9 @@ questions, decisions, bounded recall/context, telemetry, checkpoint/resume,
 multidimensional worker state, repeat inhibition with material-change override,
 corrective recall, contextual feedback strength, code actions, revisable
 relation rationale, CLI/MCP parity, package installation, installer behavior,
-passive public-call tracking, and the under-1000-line source limit.
+passive public-call tracking, canonical annotations, typed provenance seams,
+normalized search/inspect, deterministic entity views, and the under-1000-line
+source limit.
 
 ## License
 

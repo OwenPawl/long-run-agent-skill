@@ -1,14 +1,16 @@
-"""Bounded worker context, expansion, feedback, and procedural queries."""
+"""Bounded worker context, structured search, inspection, and feedback."""
 
 from __future__ import annotations
 
 from collections import Counter
 from typing import Any
 
+from .annotations import canonical_annotation
 from .errors import SemanticError
+from .inspection import inspect_graph, structured_search
 from .recall import entity_catalog, operation_entity_ids
 from .util import canonical_json, random_id, stable_id
-from .worker_state import material_state, noncurrent_context
+from .worker_state import SURFACE_EVENT_TYPES, material_state, noncurrent_context
 
 
 def _event(kind: str, **data: Any) -> dict[str, Any]:
@@ -46,10 +48,9 @@ class ContextQueryMixin:
                     "section": "current_work",
                     "entity_id": entity["id"],
                     "entity_type": entity["entity_type"],
-                    "name": entity.get("name")
-                    or entity.get("proposition")
-                    or entity.get("description")
-                    or entity["id"],
+                    "annotation": canonical_annotation(
+                        entity, entity["entity_type"]
+                    ),
                 }
             )
         for claim_id, claim in sorted(state.get("claims", {}).items()):
@@ -67,7 +68,7 @@ class ContextQueryMixin:
                     {
                         "section": "current_claims",
                         "entity_id": claim_id,
-                        "name": claim.get("name") or claim.get("proposition"),
+                        "annotation": canonical_annotation(claim, "claim"),
                         "state": derived,
                     }
                 )
@@ -77,7 +78,7 @@ class ContextQueryMixin:
                     {
                         "section": "open_questions",
                         "entity_id": question_id,
-                        "name": question.get("name") or question.get("question"),
+                        "annotation": canonical_annotation(question, "question"),
                         "state": question.get("derived_status"),
                     }
                 )
@@ -87,7 +88,7 @@ class ContextQueryMixin:
                     {
                         "section": "affected_decisions",
                         "entity_id": decision_id,
-                        "name": decision.get("name") or decision.get("choice"),
+                        "annotation": canonical_annotation(decision, "decision"),
                         "basis_changed": True,
                     }
                 )
@@ -141,8 +142,8 @@ class ContextQueryMixin:
                                         "entity_type",
                                         "role",
                                         "historical_noncurrent",
-                                        "name",
-                                        "description",
+                                        "annotation",
+                                        "extended_annotation",
                                         "current_state",
                                         "why_relevant_now",
                                         "why_no_longer_current",
@@ -160,16 +161,12 @@ class ContextQueryMixin:
                         "section": "historical_recall",
                         "entity_id": entity_id,
                         "entity_type": entity["entity_type"],
-                        "name": entity.get("name")
-                        or entity.get("proposition")
-                        or entity_id,
-                        "reference": {"action": "expand", "entity_id": entity_id},
+                        "annotation": canonical_annotation(
+                            entity, entity["entity_type"]
+                        ),
+                        "reference": {"action": "inspect", "entity_id": entity_id},
                     }
                     if correction["noncurrent"]:
-                        entry["name"] = (
-                            f"Historical correction - {entry['name']} "
-                            f"[{correction['badge']}]"
-                        )
                         entry.update(
                             {
                                 "role": "corrective",
@@ -277,71 +274,188 @@ class ContextQueryMixin:
         }
         return response
 
-    def expand(
-        self, entity_id: str, representation: str = "structure", max_depth: int | None = None
+    def search(
+        self,
+        text: str,
+        *,
+        cursor: dict[str, Any] | None = None,
+        limit: int = 50,
+        entity_types: list[str] | None = None,
     ) -> dict[str, Any]:
         state = self.state()
         catalog = entity_catalog(state)
-        if entity_id not in catalog:
-            raise SemanticError(f"unknown entity: {entity_id}")
-        correction = noncurrent_context(entity_id, catalog[entity_id], state)
-        depth = max_depth or self.store.load_policy()["context"]["max_proof_depth"]
-        frontier, seen, related = [entity_id], {entity_id}, []
-        for _ in range(depth):
-            next_frontier: list[str] = []
-            for edge in state.get("edges", []):
-                if edge["source"] in frontier or edge["target"] in frontier:
-                    related.append(edge)
-                    other = edge["target"] if edge["source"] in frontier else edge["source"]
-                    if other not in seen:
-                        seen.add(other)
-                        next_frontier.append(other)
-            frontier = next_frontier
-            if not frontier:
-                break
-        latest_surface = next(
-            (
-                event
-                for event in reversed(state.get("retrieval_events", []))
-                if event.get("event") == "retrieval.surfaced"
-                and entity_id in event.get("entity_ids", [])
-            ),
-            {},
+        results = structured_search(
+            state, catalog, text, entity_types=entity_types
         )
-        telemetry = _event(
-            "retrieval.expanded",
-            id=random_id("retrieval_expand"),
-            context_key=f"expand:{entity_id}",
-            entity_ids=[entity_id],
-            representation=representation,
-            source_event_id=latest_surface.get("id", ""),
-        )
-        telemetry_transaction = self._record_telemetry([telemetry])
-        coverage = self.state().get("worker_state", {}).get(entity_id, {})
-        return {
-            "entity": catalog[entity_id],
-            "representation": representation,
-            "relations": related,
-            "expanded_entity_ids": sorted(seen),
-            "max_depth": depth,
-            "complete": not frontier,
-            "warning": "proof expansion depth bound reached" if frontier else "",
-            "worker_state_coverage": coverage,
-            "presentation_guard": (
-                {
-                    "historical_noncurrent": True,
-                    "current_state": correction["badge"],
-                    "why_no_longer_current": correction[
-                        "why_no_longer_current"
-                    ],
-                    "decisive_path": correction["decisive_path"],
-                    "current_successor": correction["current_successor"],
-                }
-                if correction["noncurrent"]
-                else {"historical_noncurrent": False}
+        offset = int((cursor or {}).get("offset", 0))
+        if cursor and cursor.get("generation") != state["generation"]:
+            raise SemanticError("search cursor is stale")
+        page = results[offset : offset + max(limit, 1)]
+        complete = offset + len(page) >= len(results)
+        entity_ids = [item["entity_id"] for item in page]
+        event = _event(
+            "retrieval.search_result_surfaced",
+            id=random_id("search"),
+            mode="search",
+            context_key=stable_id(
+                "search_ctx", {"text": text, "entity_types": entity_types or []}
             ),
-            "telemetry_transaction_id": telemetry_transaction["transaction_id"],
+            entity_ids=entity_ids,
+            entity_states={
+                item_id: material_state(item_id, catalog[item_id], state)
+                for item_id in entity_ids
+            },
+            canonical_annotation_entity_ids=entity_ids,
+            candidates=page,
+            policy_version=self.store.load_policy()["schema_version"],
+        )
+        transaction = self._record_telemetry([event])
+        response = {
+            "schema_version": "epistemic-search.v1",
+            "generation": state["generation"],
+            "query": text,
+            "results": page,
+            "complete": complete,
+            "telemetry_transaction_id": transaction["transaction_id"],
         }
+        if not complete:
+            response["continuation"] = {
+                "generation": state["generation"],
+                "offset": offset + len(page),
+            }
+        return response
+
+    def inspect(
+        self,
+        entity_id: str = "",
+        *,
+        facets: list[str] | None = None,
+        cursor: dict[str, Any] | None = None,
+        limit: int = 20,
+        max_depth: int | None = None,
+        since_generation: int | None = None,
+    ) -> dict[str, Any]:
+        state = self.state()
+        if cursor and cursor.get("generation") != state["generation"]:
+            raise SemanticError("inspect cursor is stale")
+        catalog = entity_catalog(state)
+        built = inspect_graph(
+            state,
+            catalog,
+            self.store.operations(),
+            entity_id=entity_id,
+            facets=facets,
+            since_generation=since_generation,
+            max_depth=max_depth
+            or self.store.load_policy()["context"]["max_proof_depth"],
+        )
+        node_items = list(built["nodes"].items())
+        offset = int((cursor or {}).get("offset", 0))
+        selected_items = node_items[offset : offset + max(limit, 1)]
+        selected_ids = {item_id for item_id, _ in selected_items}
+        complete = offset + len(selected_items) >= len(node_items)
+        nodes = dict(selected_items)
+        relations = [
+            relation
+            for relation in built["relations"]
+            if relation["source"] in selected_ids
+            and relation["target"] in selected_ids
+        ]
+        provenance_refs = {
+            node["provenance_ref"]
+            for node in nodes.values()
+            if node.get("provenance_ref")
+        }
+        event = _event(
+            "retrieval.inspect_topology_surfaced",
+            id=random_id("inspect"),
+            mode="inspect",
+            context_key=stable_id(
+                "inspect_ctx",
+                {"entity_id": entity_id, "facets": sorted(facets or [])},
+            ),
+            entity_ids=list(nodes),
+            canonical_annotation_entity_ids=list(nodes),
+            extended_annotation_entity_ids=[
+                item_id
+                for item_id, node in nodes.items()
+                if node.get("extended_annotation")
+            ],
+            topology_entity_ids=list(nodes),
+            materialized_view_available_ids=list(nodes),
+            content_read_entity_ids=[],
+            entity_states={
+                item_id: material_state(item_id, catalog[item_id], state)
+                for item_id in nodes
+            },
+        )
+        transaction = self._record_telemetry([event])
+        response: dict[str, Any] = {
+            "schema_version": "epistemic-inspect.v1",
+            "generation": state["generation"],
+            "target": entity_id,
+            "facets": sorted(facets or []),
+            "nodes": nodes,
+            "relations": relations,
+            "paths": built["paths"],
+            "diagnostics": built["diagnostics"],
+            "complete": complete,
+            "telemetry_transaction_id": transaction["transaction_id"],
+        }
+        if provenance_refs:
+            response["provenance"] = {
+                reference: built.get("provenance", {})[reference]
+                for reference in sorted(provenance_refs)
+            }
+        group_offset = int((cursor or {}).get("group_offset", 0))
+        history_offset = int((cursor or {}).get("history_offset", 0))
+        for field in ("groups", "history", "presentation_guard"):
+            if field in built:
+                value = built[field]
+                if field == "history":
+                    value = value[history_offset : history_offset + max(limit, 1)]
+                    complete = complete and history_offset + len(value) >= len(
+                        built[field]
+                    )
+                    response["complete"] = complete
+                elif field == "groups":
+                    value = {
+                        name: (
+                            group[group_offset : group_offset + max(limit, 1)]
+                            if isinstance(group, list)
+                            else dict(
+                                list(group.items())[
+                                    group_offset : group_offset + max(limit, 1)
+                                ]
+                            )
+                            if isinstance(group, dict)
+                            else group
+                        )
+                        for name, group in value.items()
+                    }
+                    complete = complete and all(
+                        not isinstance(group, (list, dict))
+                        or group_offset + len(value[name]) >= len(group)
+                        for name, group in built[field].items()
+                    )
+                    response["complete"] = complete
+                response[field] = value
+        if "telemetry" in set(facets or []):
+            response.setdefault("groups", {})["telemetry"] = self._telemetry_metrics(
+                self.state()
+            )
+        if not complete:
+            response["continuation"] = {
+                "generation": state["generation"],
+                "offset": offset + len(selected_items),
+                "group_offset": group_offset + max(limit, 1),
+                "history_offset": history_offset + max(limit, 1),
+            }
+        response["worker_state_after_inspect"] = {
+            item_id: self.state().get("worker_state", {}).get(item_id, {})
+            for item_id in nodes
+        }
+        return response
 
     def feedback(self, event_id: str, entity_id: str, action: str) -> dict[str, Any]:
         state = self.state()
@@ -352,7 +466,7 @@ class ContextQueryMixin:
             )
             if not source_event:
                 raise SemanticError(f"unknown retrieval event: {event_id}")
-            if source_event.get("event") != "retrieval.surfaced":
+            if source_event.get("event") not in SURFACE_EVENT_TYPES:
                 raise SemanticError("dismissal requires a surfaced retrieval event")
             if entity_id not in source_event.get("entity_ids", []):
                 raise SemanticError(
@@ -360,7 +474,7 @@ class ContextQueryMixin:
                 )
             source_sequence = int(source_event.get("telemetry_sequence", 0))
             inspected = any(
-                event.get("event") == "retrieval.expanded"
+                event.get("event") in {"retrieval.expanded", "retrieval.content_read"}
                 and entity_id in event.get("entity_ids", [])
                 and int(event.get("telemetry_sequence", 0)) > source_sequence
                 for event in state.get("retrieval_events", [])
@@ -445,154 +559,6 @@ class ContextQueryMixin:
                 )
         return changes
 
-    def query(
-        self,
-        kind: str,
-        entity_id: str = "",
-        *,
-        text: str = "",
-        cursor: dict[str, Any] | None = None,
-        limit: int = 20,
-    ) -> dict[str, Any]:
-        state = self.state()
-        catalog = entity_catalog(state)
-        if kind == "belief":
-            claim = state.get("claims", {}).get(entity_id)
-            if not claim:
-                raise SemanticError(f"unknown claim: {entity_id}")
-            correction = noncurrent_context(
-                entity_id,
-                {**claim, "entity_type": "claim", "id": entity_id},
-                state,
-            )
-            result: Any = {
-                **claim.get("derived", {}),
-                "historical_noncurrent": correction["noncurrent"],
-                "presentation_status": correction["badge"] or "CURRENT",
-                "why_no_longer_current": correction["why_no_longer_current"],
-                "decisive_path": correction["decisive_path"],
-                "current_successor": correction["current_successor"],
-            }
-        elif kind == "why":
-            claim = state.get("claims", {}).get(entity_id, {})
-            result = [
-                state["arguments"][item]
-                for item in claim.get("derived", {}).get("supporting_arguments", [])
-            ]
-        elif kind == "why-not":
-            result = [
-                item
-                for item in state.get("arguments", {}).values()
-                if _conclusion_id(item) == entity_id and not item.get("active")
-            ]
-        elif kind == "defeaters":
-            argument_ids = {entity_id}
-            if entity_id in state.get("claims", {}):
-                argument_ids.update(
-                    item_id
-                    for item_id, item in state["arguments"].items()
-                    if _conclusion_id(item) == entity_id
-                )
-            result = [
-                item
-                for item in state.get("attacks", {}).values()
-                if item.get("target", {}).get("id") in argument_ids | {entity_id}
-            ]
-        elif kind == "assumptions":
-            result = [
-                {
-                    "argument_id": item_id,
-                    "assumptions": item.get("assumptions", []),
-                    "dependencies": item.get("dependencies", []),
-                    "blockers": item.get("blockers", []),
-                }
-                for item_id, item in state.get("arguments", {}).items()
-                if item_id == entity_id or _conclusion_id(item) == entity_id
-            ]
-        elif kind == "impact":
-            result = self._impact(state, entity_id, limit * 4)
-        elif kind == "unknowns":
-            result = [
-                {"unknown_type": "open_question", "entity": item}
-                for item in state.get("questions", {}).values()
-                if item.get("derived_status") != "resolved"
-            ]
-            result.extend(
-                {"unknown_type": "unsupported_claim", "entity": item}
-                for item in state.get("claims", {}).values()
-                if item.get("derived", {}).get("support_state")
-                in {"unsupported", "contested"}
-            )
-            result.extend(
-                {"unknown_type": "verification_gap", "entity": item}
-                for item in state.get("claims", {}).values()
-                if item.get("derived", {}).get("verification_state") != "verified"
-            )
-        elif kind == "history":
-            result = [
-                item for item in self.store.operations() if entity_id in operation_entity_ids([item])
-            ]
-        elif kind == "changes-since":
-            result = self.changes_since(int(entity_id or 0))
-        elif kind == "revalidate":
-            result = [
-                {
-                    "claim_id": claim_id,
-                    "paths": claim.get("derived", {}).get("revalidation_plan", []),
-                }
-                for claim_id, claim in state.get("claims", {}).items()
-                if claim.get("derived", {}).get("applicability_state") == "revalidation_required"
-            ]
-        elif kind == "search":
-            result = self._search(catalog, text, state)
-        elif kind == "telemetry":
-            result = self._telemetry_metrics(state)
-        elif kind == "worker-state":
-            result = [
-                {"entity_id": item_id, **coverage}
-                for item_id, coverage in sorted(state.get("worker_state", {}).items())
-                if not entity_id or item_id == entity_id
-            ]
-        else:
-            raise SemanticError(
-                "query kind must be belief, why, why-not, defeaters, assumptions, impact, "
-                "unknowns, history, changes-since, revalidate, search, telemetry, or worker-state"
-            )
-        if not isinstance(result, list):
-            return {"kind": kind, "generation": state["generation"], "result": result, "complete": True}
-        offset = int((cursor or {}).get("offset", 0))
-        if cursor and cursor.get("generation") != state["generation"]:
-            raise SemanticError("query cursor is stale")
-        page = result[offset : offset + limit]
-        complete = offset + len(page) >= len(result)
-        response = {
-            "kind": kind,
-            "generation": state["generation"],
-            "result": page,
-            "complete": complete,
-            "continuation": None
-            if complete
-            else {"generation": state["generation"], "offset": offset + len(page)},
-            "warning": "result is incomplete; continue with the cursor" if not complete else "",
-        }
-        if kind == "search" and result:
-            page_ids = [item["entity_id"] for item in page]
-            event = _event(
-                "retrieval.surfaced",
-                id=random_id("search"),
-                mode="search",
-                context_key=stable_id("search_ctx", text),
-                entity_ids=page_ids,
-                entity_states={
-                    item_id: material_state(item_id, catalog[item_id], state)
-                    for item_id in page_ids
-                },
-                candidates=result,
-                policy_version=self.store.load_policy()["schema_version"],
-            )
-            self._record_telemetry([event])
-        return response
-
     def _telemetry_metrics(self, state: dict[str, Any]) -> dict[str, Any]:
         events = state.get("retrieval_events", [])
         counts = Counter(item.get("event", "") for item in events)
@@ -605,8 +571,12 @@ class ContextQueryMixin:
         searches = [
             item
             for item in events
-            if item.get("event") == "retrieval.surfaced"
-            and item.get("mode") == "search"
+            if item.get("event") == "retrieval.search_result_surfaced"
+        ]
+        inspections = [
+            item
+            for item in events
+            if item.get("event") == "retrieval.inspect_topology_surfaced"
         ]
         contexts = [
             item for item in events if item.get("event") == "retrieval.context_generated"
@@ -629,12 +599,14 @@ class ContextQueryMixin:
                     counts["retrieval.context_generated"]
                     + counts["retrieval.expanded"]
                     + len(searches)
+                    + len(inspections)
                     + sum(
                         item.get("type") == "checkpoint.created"
                         for item in semantic_operations
                     )
                 ),
                 "manual_searches": len(searches),
+                "explicit_inspections": len(inspections),
                 "explicit_relation_management_operations": sum(
                     item.get("type") == "relation.asserted"
                     for item in semantic_operations
@@ -698,46 +670,3 @@ class ContextQueryMixin:
             },
             "complete": True,
         }
-
-    @staticmethod
-    def _impact(state: dict[str, Any], entity_id: str, bound: int) -> list[dict[str, Any]]:
-        visited = {entity_id}
-        frontier = [entity_id]
-        paths = []
-        while frontier and len(paths) < bound:
-            current = frontier.pop(0)
-            for edge in state.get("edges", []):
-                if edge["source"] != current or edge["target"] in visited:
-                    continue
-                visited.add(edge["target"])
-                frontier.append(edge["target"])
-                paths.append(edge)
-        return paths
-
-    @staticmethod
-    def _search(
-        catalog: dict[str, dict[str, Any]],
-        text: str,
-        state: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        terms = [term.lower() for term in text.split() if term]
-        results = []
-        for entity_id, entity in catalog.items():
-            haystack = " ".join(
-                str(entity.get(key, ""))
-                for key in ("name", "description", "proposition", "subject", "aliases", "tags")
-            ).lower()
-            score = sum(haystack.count(term) for term in terms)
-            if score:
-                correction = noncurrent_context(entity_id, entity, state)
-                results.append(
-                    {
-                        "entity_id": entity_id,
-                        "entity_type": entity["entity_type"],
-                        "score": score,
-                        "features": {"term_frequency": score},
-                        "historical_noncurrent": correction["noncurrent"],
-                        "presentation_status": correction["badge"] or "CURRENT",
-                    }
-                )
-        return sorted(results, key=lambda item: (-item["score"], item["entity_id"]))

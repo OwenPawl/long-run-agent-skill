@@ -88,34 +88,33 @@ def build_parser() -> argparse.ArgumentParser:
     decide.add_argument("--preview", action="store_true")
     _add_json_input(decide)
 
-    query = commands.add_parser("query", help="run a deterministic epistemic query")
-    query.add_argument(
-        "kind",
-        choices=[
-            "belief",
-            "why",
-            "why-not",
-            "defeaters",
-            "assumptions",
-            "impact",
-            "unknowns",
-            "history",
-            "changes-since",
-            "revalidate",
-            "search",
-            "telemetry",
-            "worker-state",
-        ],
-    )
-    query.add_argument("--id", default="")
-    query.add_argument("--text", default="")
-    query.add_argument("--cursor", type=_json_value)
-    query.add_argument("--limit", type=int, default=20)
+    update = commands.add_parser("update", help="compile an EpistemicDelta")
+    update.add_argument("--preview", action="store_true")
+    update.add_argument("--expected-generation", type=int)
+    _add_json_input(update)
 
-    expand = commands.add_parser("expand", help="expand an entity at the cheapest useful resolution")
-    expand.add_argument("id")
-    expand.add_argument("--representation", default="structure")
-    expand.add_argument("--max-depth", type=int)
+    search = commands.add_parser("search", help="discover relevant epistemic entities")
+    search.add_argument("text")
+    search.add_argument("--cursor", type=_json_value)
+    search.add_argument("--limit", type=int, default=50)
+    search.add_argument("--type", dest="entity_types", action="append", default=[])
+
+    inspect = commands.add_parser("inspect", help="navigate compact epistemic topology")
+    inspect.add_argument("id", nargs="?", default="")
+    inspect.add_argument("--why", action="store_true")
+    inspect.add_argument("--why-not", action="store_true")
+    inspect.add_argument("--defeaters", action="store_true")
+    inspect.add_argument("--assumptions", action="store_true")
+    inspect.add_argument("--history", action="store_true")
+    inspect.add_argument("--impact", action="store_true")
+    inspect.add_argument("--unknowns", action="store_true")
+    inspect.add_argument("--revalidation", action="store_true")
+    inspect.add_argument("--changes-since", type=int)
+    inspect.add_argument("--telemetry", action="store_true")
+    inspect.add_argument("--worker-state", action="store_true")
+    inspect.add_argument("--cursor", type=_json_value)
+    inspect.add_argument("--limit", type=int, default=20)
+    inspect.add_argument("--max-depth", type=int)
 
     feedback = commands.add_parser("feedback", help="dismiss recall or accept/reject a relation suggestion")
     feedback.add_argument("event_id")
@@ -133,11 +132,6 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--summary", default="")
     close.add_argument("--next-action", action="append", default=[])
 
-    preview = commands.add_parser("preview", help="preview a raw EpistemicDelta")
-    _add_json_input(preview)
-    apply = commands.add_parser("apply", help="apply a raw EpistemicDelta")
-    apply.add_argument("--expected-generation", type=int)
-    _add_json_input(apply)
     return parser
 
 
@@ -168,10 +162,41 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return compiler.ask(_data(args), preview=args.preview)
     if args.command == "decide":
         return compiler.decide(_data(args), preview=args.preview)
-    if args.command == "query":
-        return compiler.query(args.kind, args.id, text=args.text, cursor=args.cursor, limit=args.limit)
-    if args.command == "expand":
-        return compiler.expand(args.id, representation=args.representation, max_depth=args.max_depth)
+    if args.command == "update":
+        return compiler.update(
+            _data(args),
+            preview=args.preview,
+            expected_generation=args.expected_generation,
+        )
+    if args.command == "search":
+        return compiler.search(
+            args.text,
+            cursor=args.cursor,
+            limit=args.limit,
+            entity_types=args.entity_types,
+        )
+    if args.command == "inspect":
+        flags = {
+            "why": args.why,
+            "why-not": args.why_not,
+            "defeaters": args.defeaters,
+            "assumptions": args.assumptions,
+            "history": args.history,
+            "impact": args.impact,
+            "unknowns": args.unknowns,
+            "revalidation": args.revalidation,
+            "changes-since": args.changes_since is not None,
+            "telemetry": args.telemetry,
+            "worker-state": args.worker_state,
+        }
+        return compiler.inspect(
+            args.id,
+            facets=[name for name, enabled in flags.items() if enabled],
+            cursor=args.cursor,
+            limit=args.limit,
+            max_depth=args.max_depth,
+            since_generation=args.changes_since,
+        )
     if args.command == "feedback":
         return compiler.feedback(args.event_id, args.entity_id, args.action)
     if args.command == "checkpoint":
@@ -184,10 +209,6 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return compiler.validate()
     if args.command == "close":
         return compiler.close(args.outcome, summary=args.summary, next_actions=args.next_action)
-    if args.command == "preview":
-        return compiler.preview(_data(args))
-    if args.command == "apply":
-        return compiler.apply(_data(args), expected_generation=args.expected_generation)
     raise EpistemicError(f"unhandled command: {args.command}")
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .annotations import canonical_annotation
 from .util import stable_id
 from .worker_state import ENTITY_COLLECTIONS, operation_references
 
@@ -161,15 +162,20 @@ def annotation_revision_opportunities(
         salience = coverage.get("salience", {}).get("estimate", 0.0)
         is_structural = entity_id in structural
         is_corrective_path = entity_id in corrective_path_ids
-        if not is_corrective_path and not (
+        is_inspected = int(
+            state.get("attention", {})
+            .get(entity_id, {})
+            .get("last_inspect_topology_surfaced_generation", -1)
+        ) >= int(state.get("generation", 0)) - 1
+        if not is_corrective_path and not is_inspected and not (
             content >= 0.8 and (is_structural or salience >= 0.8)
         ):
             continue
-        field = "rationale" if entity_type == "relation" else "name_or_description"
+        field = "rationale" if entity_type == "relation" else "annotation"
         current = (
             entity.get("rationale", "")
             if entity_type == "relation"
-            else entity.get("name") or entity.get("description") or ""
+            else canonical_annotation(entity, entity_type)
         )
         body = {
             "entity_type": entity_type,
@@ -180,6 +186,7 @@ def annotation_revision_opportunities(
                 reason
                 for reason, present in (
                     ("content was recently expanded", content >= 0.8),
+                    ("entity was recently inspected", is_inspected),
                     ("entity is active in new structural reasoning", is_structural),
                     ("corrective explanation traverses this relation", is_corrective_path),
                 )
@@ -192,7 +199,11 @@ def annotation_revision_opportunities(
                 "id": stable_id("annotation_opportunity", body),
                 **body,
                 "message": "Label or rationale may be misleading; revise only if useful now.",
-                "semantic_input_required": [field],
+                "semantic_input_required": (
+                    [field]
+                    if field == "rationale"
+                    else ["annotation.subject", "annotation.predicate"]
+                ),
                 "proposed_EpistemicDelta_template": {
                     "operations": [
                         {
@@ -200,7 +211,15 @@ def annotation_revision_opportunities(
                             "data": {
                                 "entity_type": entity_type,
                                 "entity_id": entity_id,
-                                field: "<replacement>",
+                                field: (
+                                    "<replacement>"
+                                    if field == "rationale"
+                                    else {
+                                        "subject": "<subject>",
+                                        "predicate": "<predicate>",
+                                        "scope": "<optional scope>",
+                                    }
+                                ),
                                 "reason": "<why the presentation metadata changed>",
                             },
                         }

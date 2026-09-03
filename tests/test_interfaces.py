@@ -50,8 +50,10 @@ class InterfaceAndPackageTests(unittest.TestCase):
                 json.dumps(
                     {
                         "id": "cli_evidence",
-                        "name": "CLI observation",
-                        "description": "Observation recorded through the CLI",
+                        "annotation": {
+                            "subject": "CLI observation",
+                            "predicate": "records semantic input",
+                        },
                     }
                 ),
             )
@@ -76,17 +78,25 @@ class InterfaceAndPackageTests(unittest.TestCase):
                 json.dumps(
                     {
                         "id": "cli_claim",
-                        "name": "CLI behavior",
-                        "description": "Behavior asserted through the CLI",
+                        "annotation": {
+                            "subject": "CLI",
+                            "predicate": "records semantic claims",
+                        },
                         "proposition": "The CLI records semantic claims.",
                         "premises": [{"type": "evidence", "id": "cli_evidence"}],
                         "warrant": {"statement": "The CLI observation warrants this claim."},
                         "argument_id": "cli_argument",
+                        "argument_annotation": {
+                            "subject": "CLI observation",
+                            "predicate": "warrants the semantic claim",
+                        },
                     }
                 ),
             )
-            belief = self.run_cli(root, "query", "belief", "--id", "cli_claim")
-            self.assertEqual(belief["result"]["support_state"], "supported")
+            inspected = self.run_cli(root, "inspect", "cli_claim")
+            self.assertIn("supported", inspected["nodes"]["cli_claim"]["state"])
+            searched = self.run_cli(root, "search", "semantic claims")
+            self.assertEqual(searched["results"][0]["entity_id"], "cli_claim")
             self.assertEqual(self.run_cli(root, "validate")["status"], "success")
 
     def test_mcp_and_cli_have_matching_semantic_operations(self) -> None:
@@ -103,16 +113,15 @@ class InterfaceAndPackageTests(unittest.TestCase):
             "mission_attack",
             "mission_ask",
             "mission_decide",
-            "mission_query",
-            "mission_expand",
+            "mission_update",
+            "mission_search",
+            "mission_inspect",
             "mission_feedback",
             "mission_checkpoint",
             "mission_resume",
             "mission_close",
             "mission_rebuild",
             "mission_validate",
-            "mission_preview",
-            "mission_apply",
             "mission_control_read",
         }
         self.assertEqual(names, expected)
@@ -123,6 +132,84 @@ class InterfaceAndPackageTests(unittest.TestCase):
             self.assertEqual(initialized["status"], "success")
             self.assertEqual(started["status"], "success")
             self.assertEqual(context["data"]["schema_version"], "worker-context.v1")
+            self.assertNotIn("mission_query", server.handlers)
+            self.assertNotIn("mission_expand", server.handlers)
+
+    def test_cli_and_mcp_search_inspect_behavior_match(self) -> None:
+        server = FakeServer()
+        register_mission_tools(server)
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_root = Path(tmp) / "cli"
+            mcp_root = Path(tmp) / "mcp"
+            for root in (cli_root, mcp_root):
+                if root == cli_root:
+                    self.run_cli(root, "init", "--goal", "Parity mission")
+                    self.run_cli(
+                        root,
+                        "start",
+                        "--goal",
+                        "Parity mission",
+                        "--run-id",
+                        "run_parity",
+                    )
+                else:
+                    server.handlers["mission_init"](str(root), "Parity mission")
+                    server.handlers["mission_start"](
+                        str(root), "Parity mission", run_id="run_parity"
+                    )
+            delta = {
+                "operations": [
+                    {
+                        "type": "evidence.registered",
+                        "data": {
+                            "id": "parity_evidence",
+                            "annotation": {
+                                "subject": "Parity trace",
+                                "predicate": "records matching behavior",
+                            },
+                            "provenance_refs": [
+                                {"type": "tool_event", "id": "T-parity"}
+                            ],
+                        },
+                    }
+                ]
+            }
+            self.run_cli(
+                cli_root, "update", "--data", json.dumps(delta, sort_keys=True)
+            )
+            mcp_update = server.handlers["mission_update"](str(mcp_root), delta)
+            self.assertEqual(mcp_update["status"], "success")
+
+            cli_search = self.run_cli(cli_root, "search", "Parity T-parity")
+            mcp_search = server.handlers["mission_search"](
+                str(mcp_root), "Parity T-parity"
+            )["data"]
+            self.assertEqual(cli_search["results"], mcp_search["results"])
+            cli_inspect = self.run_cli(cli_root, "inspect", "parity_evidence")
+            mcp_inspect = server.handlers["mission_inspect"](
+                str(mcp_root), "parity_evidence"
+            )["data"]
+            for field in ("nodes", "relations", "paths", "provenance"):
+                self.assertEqual(cli_inspect.get(field), mcp_inspect.get(field))
+
+    def test_cli_does_not_expose_removed_query_or_expand_commands(self) -> None:
+        for command in ("query", "expand"):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "long_run_agent_skill",
+                        "--root",
+                        tmp,
+                        command,
+                    ],
+                    cwd=ROOT,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn("invalid choice", completed.stderr)
 
     def test_editable_package_install_and_entrypoints_work_without_source_tree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
